@@ -1,0 +1,193 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields: uid, name, email, role (mechanic, admin), createdAt
+    //
+    // Collection: customers
+    // Fields: name, email, phone, address, createdAt
+    //
+    // Collection: machinery
+    // Fields: customerId, type, model, serialNumber, purchaseDate, warrantyExpiry, lastServiceDate, nextServiceDueDate, status
+    //
+    // Collection: serviceTickets
+    // Fields: machineryId, customerId, mechanicId, status, description, openedAt, closedAt
+    //
+    // Collection: serviceTickets/{ticketId}/logs
+    // Fields: ticketId, mechanicId, workDone, partsReplaced, timestamp
+    //
+    // Collection: auditLogs
+    // Fields: userId, userName, action, entityType, entityId, details, timestamp
+    //
+    // Collection: notifications
+    // Fields: customerId, customerName, customerEmail, machineryId, machineryModel, type, status, sentAt, message
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        ((request.auth.token.email == "lodzax@gmail.com" && request.auth.token.email_verified == true) ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Administrator'));
+    }
+
+    function isManager() {
+      return isAuthenticated() && 
+        (isAdmin() || 
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Manager'));
+    }
+
+    function isTechnician() {
+      return isAuthenticated() && 
+        (isManager() || 
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Field Technician'));
+    }
+
+    function isUser(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasOnly(['uid', 'name', 'email', 'role', 'createdAt']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.email is string && data.email.matches('^.+@.+$') &&
+             data.role in ['Field Technician', 'Manager', 'Administrator'];
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['name', 'phone', 'createdAt']) &&
+             data.keys().hasOnly(['name', 'email', 'phone', 'address', 'invoiceDate', 'invoiceNumber', 'invoiceAmount', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
+             (!('email' in data) || (data.email is string && data.email.matches('^.+@.+$'))) &&
+             (!('address' in data) || (data.address is string && data.address.size() < 200)) &&
+             (!('invoiceDate' in data) || data.invoiceDate is string) &&
+             (!('invoiceNumber' in data) || data.invoiceNumber is string) &&
+             (!('invoiceAmount' in data) || data.invoiceAmount is number) &&
+             data.createdAt is string;
+    }
+
+    function isValidMachinery(data) {
+      return data.keys().hasAll(['customerId', 'type', 'model', 'serialNumber', 'warrantyExpiry']) &&
+             data.keys().hasOnly(['customerId', 'type', 'model', 'serialNumber', 'purchaseDate', 'warrantyExpiry', 'lastServiceDate', 'nextServiceDueDate', 'status']) &&
+             data.customerId is string &&
+             data.type in ['Tractor', 'Generator', 'Water pump', 'Electric Motors', 'Transformers', 'Bow Mills', 'Jaw Crusher', 'Electric Compressors', 'Diesel Compressors', 'Engines'] &&
+             data.model is string && data.model.size() > 0 && data.model.size() < 100 &&
+             data.serialNumber is string && data.serialNumber.size() > 0 && data.serialNumber.size() < 100 &&
+             data.warrantyExpiry is string &&
+             (!('status' in data) || data.status in ['Operational', 'Due for Service', 'Under Repair']);
+    }
+
+    function isValidTicket(data) {
+      return data.keys().hasAll(['machineryId', 'customerId', 'status', 'openedAt']) &&
+             data.keys().hasOnly(['machineryId', 'customerId', 'mechanicId', 'status', 'description', 'openedAt', 'closedAt']) &&
+             data.machineryId is string &&
+             data.customerId is string &&
+             data.status in ['Open', 'In Progress', 'Completed'] &&
+             data.openedAt is string;
+    }
+
+    function isValidLog(data) {
+      return data.keys().hasAll(['ticketId', 'mechanicId', 'workDone', 'timestamp']) &&
+             data.keys().hasOnly(['ticketId', 'mechanicId', 'workDone', 'partsReplaced', 'timestamp']) &&
+             data.ticketId is string &&
+             data.mechanicId is string &&
+             data.workDone is string && data.workDone.size() > 0 && data.workDone.size() < 2000 &&
+             (!('partsReplaced' in data) || (data.partsReplaced is string && data.partsReplaced.size() < 1000));
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['userId', 'userName', 'action', 'entityType', 'entityId', 'timestamp']) &&
+             data.keys().hasOnly(['userId', 'userName', 'action', 'entityType', 'entityId', 'details', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.userName is string &&
+             data.action is string &&
+             data.entityType is string &&
+             data.entityId is string &&
+             data.timestamp is string;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['customerId', 'customerName', 'customerEmail', 'machineryId', 'type', 'status', 'sentAt']) &&
+             data.keys().hasOnly(['customerId', 'customerName', 'customerEmail', 'machineryId', 'machineryModel', 'type', 'status', 'sentAt', 'message']) &&
+             data.customerId is string &&
+             data.customerName is string &&
+             data.customerEmail is string &&
+             data.machineryId is string &&
+             data.type == 'SERVICE_REMINDER' &&
+             data.status in ['SENT', 'FAILED', 'MOCKED'] &&
+             data.sentAt is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{uid} {
+      allow read: if isAuthenticated();
+      allow create: if (isUser(uid) || isAdmin()) && isValidUser(request.resource.data);
+      allow update: if (isAdmin() || (isUser(uid) && request.resource.data.role == resource.data.role)) && isValidUser(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /customers/{customerId} {
+      allow read: if isTechnician();
+      allow create: if isManager() && isValidCustomer(request.resource.data);
+      allow update: if isManager() && isValidCustomer(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /machinery/{machineryId} {
+      allow read: if isTechnician();
+      allow create: if isManager() && isValidMachinery(request.resource.data);
+      allow update: if isManager() && isValidMachinery(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /serviceTickets/{ticketId} {
+      allow read: if isTechnician();
+      allow create: if isTechnician() && isValidTicket(request.resource.data);
+      allow update: if isTechnician() && isValidTicket(request.resource.data);
+      allow delete: if isAdmin();
+
+      match /logs/{logId} {
+        allow read: if isTechnician();
+        allow create: if isTechnician() && isValidLog(request.resource.data);
+        allow update: if isTechnician() && isValidLog(request.resource.data);
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated() && isValidAuditLog(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAdmin();
+      allow create: if false; // Only created via server-side Admin SDK
+      allow update, delete: if false;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
