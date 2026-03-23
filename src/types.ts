@@ -55,18 +55,39 @@ export interface ServiceLog {
   mechanicId: string;
   workDone: string;
   partsReplaced?: string;
+  usedParts?: UsedPart[];
   timestamp: string;
+}
+
+export interface Part {
+  id: string;
+  name: string;
+  sku: string;
+  description?: string;
+  quantity: number;
+  minQuantity?: number;
+  unitPrice: number;
+  category?: string;
+  updatedAt?: string;
+}
+
+export interface UsedPart {
+  partId: string;
+  partName: string;
+  quantity: number;
 }
 
 export interface ServiceNotification {
   id: string;
-  customerId: string;
-  customerName: string;
-  customerEmail: string;
-  machineryId: string;
+  customerId?: string;
+  customerName?: string;
+  customerEmail?: string;
+  machineryId?: string;
   machineryModel?: string;
-  type: 'SERVICE_REMINDER';
-  status: 'SENT' | 'FAILED' | 'MOCKED';
+  partId?: string;
+  partName?: string;
+  type: 'SERVICE_REMINDER' | 'LOW_STOCK';
+  status: 'SENT' | 'FAILED' | 'MOCKED' | 'SYSTEM';
   sentAt: string;
   message: string;
 }

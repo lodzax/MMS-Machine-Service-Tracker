@@ -4,9 +4,9 @@ import {
   collection, doc, getDoc, getDocs, setDoc, updateDoc, addDoc, deleteDoc, query, where, onSnapshot, orderBy, limit, writeBatch,
   OperationType, handleFirestoreError, logAudit
 } from './firebase';
-import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification } from './types';
+import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification, Part, UsedPart } from './types';
 import { 
-  LayoutDashboard, Users, Construction, Ticket, History, LogOut, Search, Plus, 
+  LayoutDashboard, Users, Construction, Ticket, History, LogOut, Search, Plus, Trash2,
   CheckCircle2, AlertCircle, Clock, ChevronRight, Settings, Wrench, Phone, Mail, MapPin, Calendar, User as UserIcon, Filter, FileText, Download,
   Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge
 } from 'lucide-react';
@@ -89,7 +89,9 @@ interface AuthContextType {
   canEditMachinery: boolean;
   canEditTickets: boolean;
   canViewAuditLogs: boolean;
+  canViewMechanics: boolean;
   canEditMechanics: boolean;
+  canEditInventory: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({ 
@@ -103,7 +105,9 @@ const AuthContext = createContext<AuthContextType>({
   canEditMachinery: false,
   canEditTickets: false,
   canViewAuditLogs: false,
-  canEditMechanics: false
+  canViewMechanics: false,
+  canEditMechanics: false,
+  canEditInventory: false
 });
 
 const useAuth = () => useContext(AuthContext);
@@ -258,7 +262,9 @@ function AppContent() {
       canEditMachinery: isAdmin || isManager,
       canEditTickets: isAdmin || isManager || isTechnician,
       canViewAuditLogs: isAdmin,
-      canEditMechanics: isAdmin
+      canViewMechanics: isAdmin || isManager,
+      canEditMechanics: isAdmin,
+      canEditInventory: isAdmin || isManager,
     };
   }, [user, profile, loading]);
 
@@ -319,7 +325,7 @@ function AppLayout({
   selectedCustomerId: string | null,
   setSelectedCustomerId: (id: string | null) => void
 }) {
-  const { profile, canViewAuditLogs, canEditMechanics } = useAuth();
+  const { profile, canViewAuditLogs, canEditMechanics, canViewMechanics } = useAuth();
 
   return (
     <div className="min-h-screen bg-[#E4E3E0] flex font-sans text-[#141414]">
@@ -335,8 +341,9 @@ function AppLayout({
           <NavItem active={activeTab === 'customers'} onClick={() => setActiveTab('customers')} icon={<Users size={18} />} label="CUSTOMERS" />
           <NavItem active={activeTab === 'machinery'} onClick={() => setActiveTab('machinery')} icon={<Construction size={18} />} label="MACHINERY" />
           <NavItem active={activeTab === 'tickets'} onClick={() => setActiveTab('tickets')} icon={<Ticket size={18} />} label="SERVICE TICKETS" />
+          <NavItem active={activeTab === 'inventory'} onClick={() => setActiveTab('inventory')} icon={<Box size={18} />} label="INVENTORY" />
           <NavItem active={activeTab === 'history'} onClick={() => { setSelectedMachineId(null); setActiveTab('history'); }} icon={<History size={18} />} label="SERVICE HISTORY" />
-          {canEditMechanics && (
+          {canViewMechanics && (
             <NavItem active={activeTab === 'mechanics'} onClick={() => setActiveTab('mechanics')} icon={<UserIcon size={18} />} label="TEAM / MECHANICS" />
           )}
           {canViewAuditLogs && (
@@ -390,6 +397,7 @@ function AppLayout({
               />
             )}
             {activeTab === 'tickets' && <TicketsView key="tickets" />}
+            {activeTab === 'inventory' && <InventoryView key="inventory" />}
             {activeTab === 'history' && (
               <HistoryView 
                 key="history" 
@@ -397,7 +405,7 @@ function AppLayout({
                 onViewCustomer={(id) => { setSelectedCustomerId(id); setActiveTab('customers'); }}
               />
             )}
-            {activeTab === 'mechanics' && canEditMechanics && <MechanicsView key="mechanics" />}
+            {activeTab === 'mechanics' && canViewMechanics && <MechanicsView key="mechanics" />}
             {activeTab === 'audit' && canViewAuditLogs && <AuditLogsView key="audit" />}
           </AnimatePresence>
         </div>
@@ -709,9 +717,10 @@ function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: (
 
 function Dashboard() {
   const { profile } = useAuth();
-  const [stats, setStats] = useState({ due: 0, active: 0, completed: 0 });
+  const [stats, setStats] = useState({ due: 0, active: 0, completed: 0, lowStock: 0 });
   const [dueMachinery, setDueMachinery] = useState<Machinery[]>([]);
   const [activeTickets, setActiveTickets] = useState<ServiceTicket[]>([]);
+  const [lowStockParts, setLowStockParts] = useState<Part[]>([]);
 
   useEffect(() => {
     if (!profile) return;
@@ -729,7 +738,15 @@ function Dashboard() {
       setStats(prev => ({ ...prev, active: snap.size }));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'serviceTickets'));
 
-    return () => { unsubDue(); unsubTickets(); };
+    const qParts = query(collection(db, 'parts'));
+    const unsubParts = onSnapshot(qParts, (snap) => {
+      const parts = snap.docs.map(d => ({ id: d.id, ...d.data() } as Part));
+      const lowStock = parts.filter(p => p.quantity <= p.minQuantity);
+      setLowStockParts(lowStock);
+      setStats(prev => ({ ...prev, lowStock: lowStock.length }));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'parts'));
+
+    return () => { unsubDue(); unsubTickets(); unsubParts(); };
   }, []);
 
   return (
@@ -740,9 +757,10 @@ function Dashboard() {
       className="space-y-8"
     >
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <StatCard label="DUE FOR SERVICE" value={stats.due} icon={<AlertCircle className="text-red-600" />} color="bg-red-50" />
         <StatCard label="ACTIVE TICKETS" value={stats.active} icon={<Clock className="text-blue-600" />} color="bg-blue-50" />
+        <StatCard label="LOW STOCK PARTS" value={stats.lowStock} icon={<Box className="text-amber-600" />} color="bg-amber-50" />
         <StatCard label="COMPLETED TODAY" value={0} icon={<CheckCircle2 className="text-green-600" />} color="bg-green-50" />
       </div>
 
@@ -800,6 +818,32 @@ function Dashboard() {
                   <div className="text-right">
                     <p className="text-[10px] font-mono text-gray-400 uppercase">OPENED: {new Date(t.openedAt).toLocaleDateString()}</p>
                     <ChevronRight size={14} className="ml-auto mt-1 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Low Stock Alerts */}
+        <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] lg:col-span-2">
+          <div className="p-4 border-b border-[#141414] flex justify-between items-center bg-amber-50">
+            <h3 className="font-bold text-xs tracking-widest uppercase italic text-amber-900">Inventory Alerts: Low Stock</h3>
+            <Box size={16} className="text-amber-600" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-x divide-y divide-[#141414]">
+            {lowStockParts.length === 0 ? (
+              <p className="p-8 text-center text-gray-400 text-xs font-mono col-span-full">ALL INVENTORY LEVELS SUFFICIENT</p>
+            ) : (
+              lowStockParts.map(p => (
+                <div key={p.id} className="p-4 flex justify-between items-center bg-white">
+                  <div>
+                    <p className="font-bold text-xs uppercase">{p.name}</p>
+                    <p className="text-[9px] text-gray-400 font-mono">SKU: {p.sku}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-red-600">{p.quantity}</p>
+                    <p className="text-[8px] text-gray-400 uppercase font-bold">MIN: {p.minQuantity}</p>
                   </div>
                 </div>
               ))
@@ -943,21 +987,72 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
     name: '', email: '', phone: '', address: '',
     invoiceDate: '', invoiceNumber: '', invoiceAmount: ''
   });
+  const [machineryList, setMachineryList] = useState([{
+    type: 'Tractor' as MachineryType,
+    model: '',
+    serialNumber: '',
+    purchaseDate: '',
+    warrantyExpiry: '',
+    nextServiceDueDate: '',
+    status: 'Operational' as MachineryStatus
+  }]);
   const [loading, setLoading] = useState(false);
+
+  const addMachineryRow = () => {
+    setMachineryList([...machineryList, {
+      type: 'Tractor' as MachineryType,
+      model: '',
+      serialNumber: '',
+      purchaseDate: '',
+      warrantyExpiry: '',
+      nextServiceDueDate: '',
+      status: 'Operational' as MachineryStatus
+    }]);
+  };
+
+  const removeMachineryRow = (index: number) => {
+    if (machineryList.length === 1) return;
+    setMachineryList(machineryList.filter((_, i) => i !== index));
+  };
+
+  const updateMachineryRow = (index: number, field: string, value: any) => {
+    const newList = [...machineryList];
+    newList[index] = { ...newList[index], [field]: value };
+    setMachineryList(newList);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const docRef = await addDoc(collection(db, 'customers'), {
+      // 1. Create Customer
+      const customerDocRef = await addDoc(collection(db, 'customers'), {
         ...formData,
         invoiceAmount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0,
         createdAt: new Date().toISOString()
       });
+
       if (profile) {
-        await logAudit(profile.uid, profile.name, 'CREATE', 'Customer', docRef.id, `Created customer: ${formData.name}`);
+        await logAudit(profile.uid, profile.name, 'CREATE', 'Customer', customerDocRef.id, `Created customer: ${formData.name}`);
       }
-      addToast(`Customer ${formData.name} registered successfully`, "success");
+
+      // 2. Create Machinery items
+      for (const m of machineryList) {
+        // Only create if model and serial are provided
+        if (m.model && m.serialNumber) {
+          const machineryDocRef = await addDoc(collection(db, 'machinery'), {
+            ...m,
+            customerId: customerDocRef.id,
+            purchaseDate: m.purchaseDate || formData.invoiceDate
+          });
+
+          if (profile) {
+            await logAudit(profile.uid, profile.name, 'CREATE', 'Machinery', machineryDocRef.id, `Created machinery: ${m.model} for new customer ${formData.name}`);
+          }
+        }
+      }
+
+      addToast(`Customer ${formData.name} and ${machineryList.filter(m => m.model && m.serialNumber).length} machinery items registered successfully`, "success");
       onClose();
     } catch (err) {
       addToast("Failed to register customer", "error");
@@ -972,96 +1067,234 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
       <motion.div 
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        className="bg-white border border-[#141414] p-8 max-w-md w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+        className="bg-white border border-[#141414] p-8 max-w-6xl w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)] max-h-[90vh] overflow-y-auto"
       >
-        <h2 className="text-xl font-bold mb-6 tracking-tighter uppercase italic">New Customer Registration</h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Full Name *</label>
-            <input 
-              required
-              type="text" 
-              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
-              value={formData.name}
-              onChange={e => setFormData({ ...formData, name: e.target.value })}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Phone *</label>
-              <input 
-                required
-                type="tel" 
-                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
-                value={formData.phone}
-                onChange={e => setFormData({ ...formData, phone: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Email</label>
-              <input 
-                type="email" 
-                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
-                value={formData.email}
-                onChange={e => setFormData({ ...formData, email: e.target.value })}
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Address</label>
-            <textarea 
-              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none h-20"
-              value={formData.address}
-              onChange={e => setFormData({ ...formData, address: e.target.value })}
-            />
-          </div>
-          <div className="pt-4 border-t border-gray-100">
-            <h3 className="text-[10px] font-bold tracking-widest text-[#141414] mb-3 uppercase italic">Initial Purchase Invoice Details</h3>
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Invoice Date</label>
-                <input 
-                  type="date" 
-                  className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
-                  value={formData.invoiceDate}
-                  onChange={e => setFormData({ ...formData, invoiceDate: e.target.value })}
-                />
+        <div className="flex justify-between items-center mb-6 border-b-2 border-[#141414] pb-2">
+          <h2 className="text-xl font-bold tracking-tighter uppercase italic">New Customer & Machinery Registration</h2>
+          <button onClick={onClose} className="p-1 hover:bg-gray-100 border border-[#141414]">
+            <Plus className="rotate-45" size={16} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Customer Section */}
+            <div className="lg:col-span-1 space-y-6">
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold tracking-widest text-[#141414] uppercase italic flex items-center gap-2">
+                  <UserIcon size={14} /> Customer Information
+                </h3>
+                <div>
+                  <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Full Name *</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                    value={formData.name}
+                    onChange={e => setFormData({ ...formData, name: e.target.value })}
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Phone *</label>
+                    <input 
+                      required
+                      type="tel" 
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.phone}
+                      onChange={e => setFormData({ ...formData, phone: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Email</label>
+                    <input 
+                      type="email" 
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.email}
+                      onChange={e => setFormData({ ...formData, email: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Address</label>
+                  <textarea 
+                    className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none h-20"
+                    value={formData.address}
+                    onChange={e => setFormData({ ...formData, address: e.target.value })}
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Invoice Number</label>
-                <input 
-                  type="text" 
-                  className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
-                  value={formData.invoiceNumber}
-                  onChange={e => setFormData({ ...formData, invoiceNumber: e.target.value })}
-                />
+
+              <div className="pt-4 border-t border-gray-100">
+                <h3 className="text-[10px] font-bold tracking-widest text-[#141414] mb-3 uppercase italic">Purchase Invoice Details</h3>
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Invoice Date</label>
+                    <input 
+                      type="date" 
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.invoiceDate}
+                      onChange={e => setFormData({ ...formData, invoiceDate: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Invoice Number</label>
+                    <input 
+                      type="text" 
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.invoiceNumber}
+                      onChange={e => setFormData({ ...formData, invoiceNumber: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Invoice Amount ($)</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                    value={formData.invoiceAmount}
+                    onChange={e => setFormData({ ...formData, invoiceAmount: e.target.value })}
+                  />
+                </div>
               </div>
             </div>
-            <div>
-              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Invoice Amount ($)</label>
-              <input 
-                type="number" 
-                step="0.01"
-                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
-                value={formData.invoiceAmount}
-                onChange={e => setFormData({ ...formData, invoiceAmount: e.target.value })}
-              />
+
+            {/* Machinery Section */}
+            <div className="lg:col-span-2 space-y-6">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xs font-bold tracking-widest text-[#141414] uppercase italic flex items-center gap-2">
+                  <Construction size={14} /> Machinery Purchased ({machineryList.length})
+                </h3>
+                <button 
+                  type="button"
+                  onClick={addMachineryRow}
+                  className="px-3 py-1 bg-[#141414] text-white text-[10px] font-bold tracking-widest hover:bg-gray-800 transition-colors flex items-center gap-2"
+                >
+                  <Plus size={12} /> ADD ANOTHER MACHINE
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                {machineryList.map((m, index) => (
+                  <div key={index} className="relative p-6 bg-gray-50 border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,0.1)]">
+                    {machineryList.length > 1 && (
+                      <button 
+                        type="button"
+                        onClick={() => removeMachineryRow(index)}
+                        className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 text-white flex items-center justify-center border border-[#141414] hover:bg-red-700 transition-colors"
+                        title="Remove Machine"
+                      >
+                        <Plus size={14} className="rotate-45" />
+                      </button>
+                    )}
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Machine Type *</label>
+                        <select 
+                          required={!!m.model || !!m.serialNumber}
+                          className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                          value={m.type}
+                          onChange={e => updateMachineryRow(index, 'type', e.target.value as MachineryType)}
+                        >
+                          <option value="Tractor">Tractor</option>
+                          <option value="Generator">Generator</option>
+                          <option value="Water pump">Water pump</option>
+                          <option value="Electric Motors">Electric Motors</option>
+                          <option value="Transformers">Transformers</option>
+                          <option value="Bow Mills">Bow Mills</option>
+                          <option value="Jaw Crusher">Jaw Crusher</option>
+                          <option value="Electric Compressors">Electric Compressors</option>
+                          <option value="Diesel Compressors">Diesel Compressors</option>
+                          <option value="Engines">Engines</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Model Name *</label>
+                        <input 
+                          required={!!m.serialNumber || index === 0}
+                          type="text" 
+                          placeholder="e.g. John Deere 5050D"
+                          className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                          value={m.model}
+                          onChange={e => updateMachineryRow(index, 'model', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Serial Number *</label>
+                        <input 
+                          required={!!m.model || index === 0}
+                          type="text" 
+                          placeholder="Unique ID / VIN"
+                          className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                          value={m.serialNumber}
+                          onChange={e => updateMachineryRow(index, 'serialNumber', e.target.value)}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Purchase Date</label>
+                          <input 
+                            type="date" 
+                            className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                            value={m.purchaseDate}
+                            onChange={e => updateMachineryRow(index, 'purchaseDate', e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Warranty Expiry *</label>
+                          <input 
+                            required={!!m.model || !!m.serialNumber || index === 0}
+                            type="date" 
+                            className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                            value={m.warrantyExpiry}
+                            onChange={e => updateMachineryRow(index, 'warrantyExpiry', e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Next Service Due</label>
+                        <input 
+                          type="date" 
+                          className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                          value={m.nextServiceDueDate}
+                          onChange={e => updateMachineryRow(index, 'nextServiceDueDate', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Initial Status</label>
+                        <select 
+                          className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                          value={m.status}
+                          onChange={e => updateMachineryRow(index, 'status', e.target.value as MachineryStatus)}
+                        >
+                          <option value="Operational">Operational</option>
+                          <option value="Due for Service">Due for Service</option>
+                          <option value="Under Repair">Under Repair</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-          <div className="flex gap-4 pt-4">
+
+          <div className="flex gap-4 pt-6 border-t-2 border-[#141414]">
             <button 
               type="button" 
               onClick={onClose}
-              className="flex-1 py-2 border border-[#141414] text-xs font-bold hover:bg-gray-50 transition-colors"
+              className="flex-1 py-3 border border-[#141414] text-xs font-bold hover:bg-gray-50 transition-colors"
             >
               CANCEL
             </button>
             <button 
               type="submit" 
               disabled={loading}
-              className="flex-1 py-2 bg-[#141414] text-white text-xs font-bold hover:bg-gray-800 transition-colors disabled:opacity-50"
+              className="flex-1 py-3 bg-[#141414] text-white text-xs font-bold hover:bg-gray-800 transition-colors disabled:opacity-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
             >
-              {loading ? 'SAVING...' : 'REGISTER CUSTOMER'}
+              {loading ? 'SAVING...' : 'REGISTER CUSTOMER & ALL MACHINERY'}
             </button>
           </div>
         </form>
@@ -1075,6 +1308,8 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
   const { addToast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [machinery, setMachinery] = useState<Machinery[]>([]);
+  const [editingMachine, setEditingMachine] = useState<Machinery | null>(null);
+  const [deletingMachine, setDeletingMachine] = useState<Machinery | null>(null);
   const [formData, setFormData] = useState({ 
     name: customer.name, 
     email: customer.email || '', 
@@ -1350,12 +1585,48 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
                         <span>NEXT SERVICE: {m.nextServiceDueDate || 'N/A'}</span>
                       </div>
                     </div>
+                    <div className="flex gap-1">
+                      <button 
+                        onClick={() => setEditingMachine(m)}
+                        className="p-1.5 border border-[#141414] hover:bg-gray-100"
+                        title="Edit"
+                      >
+                        <Settings size={12} />
+                      </button>
+                      <button 
+                        onClick={() => setDeletingMachine(m)}
+                        className="p-1.5 border border-[#141414] hover:bg-red-50 text-red-600"
+                        title="Delete"
+                      >
+                        <Hammer size={12} className="rotate-45" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
             </div>
           </div>
         </div>
+        {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} />}
+        {deletingMachine && (
+          <DeleteMachineryModal 
+            machine={deletingMachine} 
+            onClose={() => setDeletingMachine(null)} 
+            onConfirm={async () => {
+              try {
+                await deleteDoc(doc(db, 'machinery', deletingMachine.id));
+                if (profile) {
+                  await logAudit(profile.uid, profile.name, 'DELETE', 'Machinery', deletingMachine.id, `Deleted machinery: ${deletingMachine.model} (${deletingMachine.serialNumber})`);
+                }
+                addToast(`Machinery ${deletingMachine.model} deleted successfully`, "success");
+                setDeletingMachine(null);
+              } catch (err) {
+                addToast("Failed to delete machinery", "error");
+                handleFirestoreError(err, OperationType.DELETE, `machinery/${deletingMachine.id}`);
+              }
+            }} 
+          />
+        )}
       </motion.div>
     </div>
   );
@@ -1367,9 +1638,12 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
   const [machinery, setMachinery] = useState<Machinery[]>([]);
   const [customers, setCustomers] = useState<Record<string, string>>({});
   const [isAdding, setIsAdding] = useState(false);
+  const [editingMachine, setEditingMachine] = useState<Machinery | null>(null);
+  const [deletingMachine, setDeletingMachine] = useState<Machinery | null>(null);
   const [filter, setFilter] = useState<MachineryStatus | 'ALL'>('ALL');
   const [typeFilter, setTypeFilter] = useState<MachineryType | 'ALL'>('ALL');
   const [search, setSearch] = useState('');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | 'none'>('none');
   const [loadingReport, setLoadingReport] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
@@ -1432,6 +1706,11 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
       m.type.toLowerCase().includes(search.toLowerCase()) ||
       customerName.toLowerCase().includes(search.toLowerCase());
     return matchesStatus && matchesType && matchesSearch;
+  }).sort((a, b) => {
+    if (sortOrder === 'none') return 0;
+    const dateA = new Date(a.warrantyExpiry).getTime();
+    const dateB = new Date(b.warrantyExpiry).getTime();
+    return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
   });
 
   const handleBulkStatusUpdate = async (status: MachineryStatus) => {
@@ -1483,6 +1762,20 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelectedIds(next);
+  };
+
+  const handleDeleteMachinery = async (m: Machinery) => {
+    try {
+      await deleteDoc(doc(db, 'machinery', m.id));
+      if (profile) {
+        await logAudit(profile.uid, profile.name, 'DELETE', 'Machinery', m.id, `Deleted machinery: ${m.model} (${m.serialNumber})`);
+      }
+      addToast(`Machinery ${m.model} deleted successfully`, "success");
+      setDeletingMachine(null);
+    } catch (err) {
+      addToast("Failed to delete machinery", "error");
+      handleFirestoreError(err, OperationType.DELETE, `machinery/${m.id}`);
+    }
   };
 
   return (
@@ -1554,10 +1847,10 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
           </div>
           <div className="flex flex-wrap gap-2">
             <div className="flex gap-2 border-r border-[#141414] pr-2">
-              <FilterButton active={filter === 'ALL'} onClick={() => setFilter('ALL')} label="ALL" />
-              <FilterButton active={filter === 'Operational'} onClick={() => setFilter('Operational')} label="OPERATIONAL" />
-              <FilterButton active={filter === 'Due for Service'} onClick={() => setFilter('Due for Service')} label="DUE" />
-              <FilterButton active={filter === 'Under Repair'} onClick={() => setFilter('Under Repair')} label="REPAIR" />
+              <FilterButton active={filter === 'ALL'} onClick={() => setFilter('ALL')} label="ALL" status="ALL" />
+              <FilterButton active={filter === 'Operational'} onClick={() => setFilter('Operational')} label="OPERATIONAL" status="Operational" />
+              <FilterButton active={filter === 'Due for Service'} onClick={() => setFilter('Due for Service')} label="DUE" status="Due for Service" />
+              <FilterButton active={filter === 'Under Repair'} onClick={() => setFilter('Under Repair')} label="REPAIR" status="Under Repair" />
             </div>
             <select 
               className="px-3 py-1.5 text-[10px] font-bold tracking-widest border border-[#141414] bg-white focus:outline-none uppercase"
@@ -1575,6 +1868,15 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
               <option value="Electric Compressors">Electric Compressors</option>
               <option value="Diesel Compressors">Diesel Compressors</option>
               <option value="Engines">Engines</option>
+            </select>
+            <select 
+              className="px-3 py-1.5 text-[10px] font-bold tracking-widest border border-[#141414] bg-white focus:outline-none uppercase"
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as any)}
+            >
+              <option value="none">SORT BY WARRANTY</option>
+              <option value="asc">WARRANTY (ASC)</option>
+              <option value="desc">WARRANTY (DESC)</option>
             </select>
           </div>
         </div>
@@ -1606,14 +1908,14 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
             </div>
             <div className="flex justify-between items-start mb-4">
               <div>
-                <span className={`text-[9px] font-bold px-2 py-0.5 border border-[#141414] uppercase flex items-center gap-1.5 ${
-                  m.status === 'Operational' ? 'bg-green-100 text-green-800' : 
-                  m.status === 'Due for Service' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
+                <span className={`text-[9px] font-bold px-2 py-1 border uppercase flex items-center gap-1.5 shadow-sm ${
+                  m.status === 'Operational' ? 'bg-green-50 text-green-700 border-green-200' : 
+                  m.status === 'Due for Service' ? 'bg-red-50 text-red-700 border-red-200' : 
+                  'bg-amber-50 text-amber-700 border-amber-200'
                 }`}>
-                  <div className={`w-1.5 h-1.5 rounded-full ${
-                    m.status === 'Operational' ? 'bg-green-600' : 
-                    m.status === 'Due for Service' ? 'bg-red-600' : 'bg-yellow-600'
-                  }`} />
+                  {m.status === 'Operational' && <CheckCircle2 size={12} className="shrink-0" />}
+                  {m.status === 'Due for Service' && <AlertCircle size={12} className="shrink-0" />}
+                  {m.status === 'Under Repair' && <Wrench size={12} className="shrink-0" />}
                   {m.status}
                 </span>
                 <h3 className="text-lg font-bold mt-2 tracking-tight">{m.model}</h3>
@@ -1649,6 +1951,24 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
               >
                 VIEW DETAILS
               </button>
+              {canEditMachinery && (
+                <button 
+                  onClick={() => setEditingMachine(m)}
+                  className="px-3 py-2 border border-[#141414] text-[10px] font-bold tracking-widest hover:bg-gray-50 transition-all"
+                  title="Edit Machinery"
+                >
+                  <Settings2 size={14} />
+                </button>
+              )}
+              {canEditMachinery && (
+                <button 
+                  onClick={() => setDeletingMachine(m)}
+                  className="px-3 py-2 border border-[#141414] text-[10px] font-bold tracking-widest hover:bg-red-50 text-red-600 transition-all"
+                  title="Delete Machinery"
+                >
+                  <Hammer size={14} className="rotate-45" />
+                </button>
+              )}
               <button 
                 onClick={() => handleDownloadReport(m)}
                 disabled={loadingReport === m.id}
@@ -1664,20 +1984,247 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
       </div>
 
       {isAdding && <AddMachineryModal onClose={() => setIsAdding(false)} />}
+      {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} />}
+      {deletingMachine && (
+        <DeleteMachineryModal 
+          machine={deletingMachine} 
+          onClose={() => setDeletingMachine(null)} 
+          onConfirm={() => handleDeleteMachinery(deletingMachine)} 
+        />
+      )}
     </motion.div>
   );
 }
 
-function FilterButton({ active, onClick, label }: { active: boolean, onClick: () => void, label: string }) {
+function FilterButton({ active, onClick, label, status }: { active: boolean, onClick: () => void, label: string, status?: MachineryStatus | 'ALL' }) {
+  const getColors = () => {
+    if (!active) return 'bg-white text-gray-500 hover:bg-gray-50 border-[#141414]';
+    if (status === 'Operational') return 'bg-green-600 text-white border-green-700';
+    if (status === 'Due for Service') return 'bg-red-600 text-white border-red-700';
+    if (status === 'Under Repair') return 'bg-amber-600 text-white border-amber-700';
+    return 'bg-[#141414] text-white border-[#141414]';
+  };
+
   return (
     <button 
       onClick={onClick}
-      className={`px-3 py-1.5 text-[10px] font-bold tracking-widest border border-[#141414] transition-all ${
-        active ? 'bg-[#141414] text-white' : 'bg-white text-gray-500 hover:bg-gray-50'
-      }`}
+      className={`px-3 py-1.5 text-[10px] font-bold tracking-widest border transition-all ${getColors()}`}
     >
       {label}
     </button>
+  );
+}
+
+function EditMachineryModal({ machine, onClose }: { machine: Machinery, onClose: () => void }) {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [formData, setFormData] = useState({ ...machine });
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    getDocs(collection(db, 'customers')).then(snap => {
+      setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer)));
+    });
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const { id, ...data } = formData;
+      await updateDoc(doc(db, 'machinery', machine.id), data);
+      
+      if (profile) {
+        const changes = [];
+        if (machine.model !== formData.model) changes.push(`model: ${machine.model} -> ${formData.model}`);
+        if (machine.serialNumber !== formData.serialNumber) changes.push(`serial: ${machine.serialNumber} -> ${formData.serialNumber}`);
+        if (machine.status !== formData.status) changes.push(`status: ${machine.status} -> ${formData.status}`);
+        if (machine.type !== formData.type) changes.push(`type: ${machine.type} -> ${formData.type}`);
+        if (machine.customerId !== formData.customerId) {
+          const oldCust = customers.find(c => c.id === machine.customerId)?.name || machine.customerId;
+          const newCust = customers.find(c => c.id === formData.customerId)?.name || formData.customerId;
+          changes.push(`owner: ${oldCust} -> ${newCust}`);
+        }
+        if (machine.purchaseDate !== formData.purchaseDate) changes.push(`purchaseDate: ${machine.purchaseDate} -> ${formData.purchaseDate}`);
+        if (machine.warrantyExpiry !== formData.warrantyExpiry) changes.push(`warrantyExpiry: ${machine.warrantyExpiry} -> ${formData.warrantyExpiry}`);
+        
+        await logAudit(profile.uid, profile.name, 'UPDATE', 'Machinery', machine.id, `Updated machinery details. ${changes.join(', ')}`);
+      }
+      
+      addToast(`Machinery ${formData.model} updated successfully`, "success");
+      onClose();
+    } catch (err) {
+      addToast("Failed to update machinery", "error");
+      handleFirestoreError(err, OperationType.UPDATE, `machinery/${machine.id}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white border border-[#141414] p-8 max-w-lg w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+      >
+        <h2 className="text-xl font-bold mb-6 tracking-tighter uppercase italic">Edit Machinery</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Owner / Customer *</label>
+            <select 
+              required
+              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+              value={formData.customerId}
+              onChange={e => setFormData({ ...formData, customerId: e.target.value })}
+            >
+              <option value="">SELECT CUSTOMER...</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Machine Type *</label>
+              <select 
+                required
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                value={formData.type}
+                onChange={e => setFormData({ ...formData, type: e.target.value as MachineryType })}
+              >
+                <option value="Tractor">Tractor</option>
+                <option value="Generator">Generator</option>
+                <option value="Water pump">Water pump</option>
+                <option value="Electric Motors">Electric Motors</option>
+                <option value="Transformers">Transformers</option>
+                <option value="Bow Mills">Bow Mills</option>
+                <option value="Jaw Crusher">Jaw Crusher</option>
+                <option value="Electric Compressors">Electric Compressors</option>
+                <option value="Diesel Compressors">Diesel Compressors</option>
+                <option value="Engines">Engines</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Model Name *</label>
+              <input 
+                required
+                type="text" 
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                value={formData.model}
+                onChange={e => setFormData({ ...formData, model: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Serial Number *</label>
+              <input 
+                required
+                type="text" 
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                value={formData.serialNumber}
+                onChange={e => setFormData({ ...formData, serialNumber: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Status *</label>
+              <select 
+                required
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                value={formData.status}
+                onChange={e => setFormData({ ...formData, status: e.target.value as MachineryStatus })}
+              >
+                <option value="Operational">Operational</option>
+                <option value="Due for Service">Due for Service</option>
+                <option value="Under Repair">Under Repair</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Purchase Date</label>
+              <input 
+                type="date" 
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                value={formData.purchaseDate}
+                onChange={e => setFormData({ ...formData, purchaseDate: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Warranty Expiry *</label>
+              <input 
+                required
+                type="date" 
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                value={formData.warrantyExpiry}
+                onChange={e => setFormData({ ...formData, warrantyExpiry: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="flex gap-4 pt-4">
+            <button 
+              type="button" 
+              onClick={onClose}
+              className="flex-1 py-2 border border-[#141414] text-xs font-bold hover:bg-gray-50 transition-colors"
+            >
+              CANCEL
+            </button>
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="flex-1 py-2 bg-[#141414] text-white text-xs font-bold hover:bg-gray-800 transition-colors disabled:opacity-50"
+            >
+              {loading ? 'SAVING...' : 'UPDATE MACHINERY'}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
+
+function DeleteMachineryModal({ machine, onClose, onConfirm }: { machine: Machinery, onClose: () => void, onConfirm: () => void }) {
+  const [loading, setLoading] = useState(false);
+
+  const handleConfirm = async () => {
+    setLoading(true);
+    await onConfirm();
+    setLoading(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white border-2 border-[#141414] p-8 max-w-md w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+      >
+        <div className="flex items-center gap-3 text-red-600 mb-4">
+          <AlertCircle size={24} />
+          <h2 className="text-xl font-bold tracking-tighter uppercase italic">Confirm Deletion</h2>
+        </div>
+        <p className="text-sm text-gray-600 mb-6 leading-relaxed">
+          Are you sure you want to delete <span className="font-bold text-[#141414]">{machine.model}</span> (Serial: <span className="font-mono">{machine.serialNumber}</span>)?
+          <br /><br />
+          This action is <span className="font-bold text-red-600 uppercase">permanent</span> and will also remove all associated service history and logs.
+        </p>
+        <div className="flex gap-4">
+          <button 
+            onClick={onClose}
+            className="flex-1 py-3 border border-[#141414] text-xs font-bold hover:bg-gray-50 transition-colors"
+          >
+            CANCEL
+          </button>
+          <button 
+            onClick={handleConfirm}
+            disabled={loading}
+            className="flex-1 py-3 bg-red-600 text-white text-xs font-bold hover:bg-red-700 transition-colors disabled:opacity-50 shadow-[4px_4px_0px_0px_rgba(153,27,27,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
+          >
+            {loading ? 'DELETING...' : 'DELETE PERMANENTLY'}
+          </button>
+        </div>
+      </motion.div>
+    </div>
   );
 }
 
@@ -2139,6 +2686,8 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
   const [machinery, setMachinery] = useState<Machinery | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [mechanic, setMechanic] = useState<UserProfile | null>(null);
+  const [availableParts, setAvailableParts] = useState<Part[]>([]);
+  const [selectedParts, setSelectedParts] = useState<{ partId: string, quantity: number }[]>([]);
   const [newLog, setNewLog] = useState({ workDone: '', partsReplaced: '' });
   const [loading, setLoading] = useState(false);
 
@@ -2147,6 +2696,11 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
     const q = query(collection(db, 'serviceTickets', ticket.id, 'logs'), orderBy('timestamp', 'desc'));
     const unsub = onSnapshot(q, (snap) => {
       setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceLog)));
+    });
+
+    // Fetch parts
+    const unsubParts = onSnapshot(query(collection(db, 'parts'), orderBy('name', 'asc')), (snap) => {
+      setAvailableParts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Part)));
     });
 
     // Fetch related data for PDF
@@ -2172,27 +2726,69 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
     if (!newLog.workDone) return;
     setLoading(true);
     try {
-      const docRef = await addDoc(collection(db, 'serviceTickets', ticket.id, 'logs'), {
+      const batch = writeBatch(db);
+      
+      const logData = {
         ...newLog,
         ticketId: ticket.id,
         mechanicId: profile?.uid,
-        timestamp: new Date().toISOString()
-      });
-      if (profile) {
-        await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceLog', docRef.id, `Added log to ticket ${ticket.id}: ${newLog.workDone}`);
-      }
-      // If ticket was "Open", move to "In Progress"
-      if (ticket.status === 'Open') {
-        await updateDoc(doc(db, 'serviceTickets', ticket.id), { status: 'In Progress' });
-        if (profile) {
-          await logAudit(profile.uid, profile.name, 'UPDATE', 'ServiceTicket', ticket.id, 'Status changed to In Progress');
+        timestamp: new Date().toISOString(),
+        usedParts: selectedParts.map(sp => ({
+          partId: sp.partId,
+          partName: availableParts.find(p => p.id === sp.partId)?.name || 'Unknown Part',
+          quantity: sp.quantity
+        }))
+      };
+
+      const logRef = doc(collection(db, 'serviceTickets', ticket.id, 'logs'));
+      batch.set(logRef, logData);
+
+      // Deduct from inventory
+      for (const sp of selectedParts) {
+        const part = availableParts.find(p => p.id === sp.partId);
+        if (part) {
+          const partRef = doc(db, 'parts', sp.partId);
+          const newQty = part.quantity - sp.quantity;
+          batch.update(partRef, { 
+            quantity: newQty,
+            updatedAt: new Date().toISOString()
+          });
+
+          // Trigger low stock notification if needed
+          if (newQty <= (part.minQuantity || 5)) {
+            const notifRef = doc(collection(db, 'notifications'));
+            batch.set(notifRef, {
+              type: 'LOW_STOCK',
+              status: 'SYSTEM',
+              sentAt: new Date().toISOString(),
+              partId: sp.partId,
+              partName: part.name,
+              message: `LOW STOCK ALERT: ${part.name} (SKU: ${part.sku}) is down to ${newQty} units. Minimum required: ${part.minQuantity || 5}.`
+            });
+          }
         }
       }
+
+      // If ticket was "Open", move to "In Progress"
+      if (ticket.status === 'Open') {
+        batch.update(doc(db, 'serviceTickets', ticket.id), { status: 'In Progress' });
+      }
+
+      await batch.commit();
+
+      if (profile) {
+        await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceLog', logRef.id, `Added log to ticket ${ticket.id}: ${newLog.workDone}`);
+        for (const sp of selectedParts) {
+          await logAudit(profile.uid, profile.name, 'UPDATE', 'Part', sp.partId, `Deducted ${sp.quantity} units for ticket ${ticket.id}`);
+        }
+      }
+
       addToast("Service log added successfully", "success");
       setNewLog({ workDone: '', partsReplaced: '' });
+      setSelectedParts([]);
     } catch (err) {
       addToast("Failed to add service log", "error");
-      handleFirestoreError(err, OperationType.CREATE, 'serviceLogs');
+      handleFirestoreError(err, OperationType.WRITE, 'serviceTickets');
     } finally {
       setLoading(false);
     }
@@ -2267,15 +2863,65 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                       onChange={e => setNewLog({ ...newLog, workDone: e.target.value })}
                     />
                   </div>
-                  <div>
-                    <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Parts Replaced</label>
-                    <input 
-                      type="text" 
-                      className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
-                      placeholder="LIST ANY PARTS REPLACED..."
-                      value={newLog.partsReplaced}
-                      onChange={e => setNewLog({ ...newLog, partsReplaced: e.target.value })}
-                    />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Other Parts (Non-Inventory)</label>
+                      <input 
+                        type="text" 
+                        className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+                        placeholder="E.G. OIL FILTER, SPARK PLUG..."
+                        value={newLog.partsReplaced}
+                        onChange={e => setNewLog({ ...newLog, partsReplaced: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Inventory Parts</label>
+                      <div className="space-y-2">
+                        <select 
+                          className="w-full p-2 border border-[#141414] text-[10px] font-mono focus:outline-none bg-white"
+                          onChange={(e) => {
+                            const partId = e.target.value;
+                            if (!partId) return;
+                            if (selectedParts.find(sp => sp.partId === partId)) return;
+                            setSelectedParts([...selectedParts, { partId, quantity: 1 }]);
+                            e.target.value = '';
+                          }}
+                        >
+                          <option value="">SELECT PART...</option>
+                          {availableParts.filter(p => p.quantity > 0).map(p => (
+                            <option key={p.id} value={p.id}>{p.name} ({p.quantity})</option>
+                          ))}
+                        </select>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedParts.map((sp, idx) => {
+                            const part = availableParts.find(p => p.id === sp.partId);
+                            return (
+                              <div key={idx} className="flex items-center gap-1 bg-white border border-[#141414] px-1.5 py-0.5">
+                                <span className="text-[8px] font-bold uppercase truncate max-w-[60px]">{part?.name}</span>
+                                <input 
+                                  type="number"
+                                  min="1"
+                                  max={part?.quantity || 1}
+                                  className="w-8 bg-transparent border-none text-[8px] font-bold focus:outline-none text-center"
+                                  value={sp.quantity}
+                                  onChange={(e) => {
+                                    const qty = Math.min(part?.quantity || 1, Math.max(1, parseInt(e.target.value) || 1));
+                                    setSelectedParts(selectedParts.map((p, i) => i === idx ? { ...p, quantity: qty } : p));
+                                  }}
+                                />
+                                <button 
+                                  type="button"
+                                  onClick={() => setSelectedParts(selectedParts.filter((_, i) => i !== idx))}
+                                  className="text-red-600"
+                                >
+                                  <Plus className="rotate-45" size={10} />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   <button 
                     type="submit" 
@@ -2302,8 +2948,17 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                       </div>
                       <p className="text-sm mb-3 font-medium">{log.workDone}</p>
                       {log.partsReplaced && (
-                        <div className="flex items-center gap-2 text-[10px] text-blue-600 font-bold bg-blue-50 p-1.5 border border-blue-100">
+                        <div className="flex items-center gap-2 text-[10px] text-blue-600 font-bold bg-blue-50 p-1.5 border border-blue-100 mb-2">
                           <Settings size={10} /> PARTS: {log.partsReplaced}
+                        </div>
+                      )}
+                      {log.usedParts && log.usedParts.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {log.usedParts.map((up, idx) => (
+                            <span key={idx} className="text-[9px] font-bold bg-gray-50 text-gray-600 border border-gray-200 px-1.5 py-0.5 uppercase">
+                              {up.partName} x{up.quantity}
+                            </span>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -2325,6 +2980,17 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                 {mechanic && <InfoItem label="Assigned To" value={mechanic.name} />}
               </div>
             </div>
+
+            {machinery && (
+              <div className="bg-white border border-[#141414] p-6 space-y-4">
+                <h3 className="text-xs font-bold tracking-widest uppercase italic border-b border-[#141414] pb-2">Machinery History</h3>
+                <div className="space-y-3">
+                  <InfoItem label="Purchase Date" value={machinery.purchaseDate ? new Date(machinery.purchaseDate).toLocaleDateString() : 'N/A'} />
+                  <InfoItem label="Last Service" value={machinery.lastServiceDate ? new Date(machinery.lastServiceDate).toLocaleDateString() : 'N/A'} />
+                  <InfoItem label="Warranty Expiry" value={new Date(machinery.warrantyExpiry).toLocaleDateString()} />
+                </div>
+              </div>
+            )}
 
             {ticket.status === 'Completed' && machinery && customer && (
               <button 
@@ -2413,11 +3079,18 @@ const generatePDFReport = async (ticket: ServiceTicket, machinery: Machinery, cu
   }
 
   // Work Logs Table
-  const tableData = logs.map(log => [
-    new Date(log.timestamp).toLocaleDateString(),
-    log.workDone,
-    log.partsReplaced || '-'
-  ]);
+  const tableData = logs.map(log => {
+    const partsText = [
+      log.partsReplaced,
+      ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
+    ].filter(Boolean).join(', ');
+
+    return [
+      new Date(log.timestamp).toLocaleDateString(),
+      log.workDone,
+      partsText || '-'
+    ];
+  });
 
   autoTable(doc, {
     startY: 185,
@@ -2526,7 +3199,12 @@ const generateMachineryFullReport = (machinery: Machinery, customer: Customer, t
         doc.setFontSize(9);
         
         logs.forEach(log => {
-          const logText = `- ${new Date(log.timestamp).toLocaleDateString()}: ${log.workDone}${log.partsReplaced ? ` (Parts: ${log.partsReplaced})` : ''}`;
+          const partsText = [
+            log.partsReplaced,
+            ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
+          ].filter(Boolean).join(', ');
+
+          const logText = `- ${new Date(log.timestamp).toLocaleDateString()}: ${log.workDone}${partsText ? ` (Parts: ${partsText})` : ''}`;
           const splitText = doc.splitTextToSize(logText, 160);
           doc.text(splitText, 25, currentY);
           currentY += (splitText.length * 5);
@@ -2560,6 +3238,7 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
   const [selectedId, setSelectedId] = useState<string | null>(initialMachineId || null);
   const [tickets, setTickets] = useState<ServiceTicket[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingReport, setLoadingReport] = useState(false);
 
   useEffect(() => {
     if (!profile) return;
@@ -2593,6 +3272,33 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
       });
   }, [selectedId]);
 
+  const handleDownloadFullReport = async () => {
+    if (!selectedId || !profile) return;
+    setLoadingReport(true);
+    try {
+      const m = machinery.find(m => m.id === selectedId);
+      if (!m) throw new Error("Machinery not found");
+      
+      const customer = customers[m.customerId];
+      if (!customer) throw new Error("Customer not found");
+
+      // Fetch all logs for all tickets
+      const allLogs: Record<string, ServiceLog[]> = {};
+      for (const t of tickets) {
+        const logsSnap = await getDocs(query(collection(db, 'serviceTickets', t.id, 'logs'), orderBy('timestamp', 'asc')));
+        allLogs[t.id] = logsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceLog));
+      }
+
+      generateMachineryFullReport(m, customer, tickets, allLogs);
+      
+      await logAudit(profile.uid, profile.name, 'DOWNLOAD', 'MachineryReport', m.id, `Generated full report for ${m.model} from History View`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, 'machinery_report');
+    } finally {
+      setLoadingReport(false);
+    }
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
       <div className="bg-white border border-[#141414] p-6 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
@@ -2618,31 +3324,41 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
         <div className="flex justify-center p-12"><LoadingSpinner /></div>
       ) : (
         <div className="space-y-6">
-          <div className="flex items-center gap-4 border-b border-[#141414] pb-4">
-            <div className="w-12 h-12 flex items-center justify-center border border-[#141414] bg-[#141414] text-white shrink-0">
-              {(() => {
-                const m = machinery.find(m => m.id === selectedId);
-                return m ? getMachineryIcon(m.type, 24) : <Construction size={24} />;
-              })()}
-            </div>
-            <div>
-              <h3 className="text-xs font-bold tracking-widest uppercase italic text-gray-400">Service History for</h3>
-              <div className="flex items-baseline gap-3">
-                <p className="text-xl font-bold tracking-tighter uppercase">{machinery.find(m => m.id === selectedId)?.model}</p>
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-[#141414] pb-4">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 flex items-center justify-center border border-[#141414] bg-[#141414] text-white shrink-0">
                 {(() => {
                   const m = machinery.find(m => m.id === selectedId);
-                  const customer = m ? customers[m.customerId] : null;
-                  return customer ? (
-                    <button 
-                      onClick={() => onViewCustomer?.(customer.id)}
-                      className="text-[10px] font-bold text-blue-600 hover:underline uppercase tracking-widest flex items-center gap-1"
-                    >
-                      <UserIcon size={10} /> {customer.name}
-                    </button>
-                  ) : null;
+                  return m ? getMachineryIcon(m.type, 24) : <Construction size={24} />;
                 })()}
               </div>
+              <div>
+                <h3 className="text-xs font-bold tracking-widest uppercase italic text-gray-400">Service History for</h3>
+                <div className="flex items-baseline gap-3">
+                  <p className="text-xl font-bold tracking-tighter uppercase">{machinery.find(m => m.id === selectedId)?.model}</p>
+                  {(() => {
+                    const m = machinery.find(m => m.id === selectedId);
+                    const customer = m ? customers[m.customerId] : null;
+                    return customer ? (
+                      <button 
+                        onClick={() => onViewCustomer?.(customer.id)}
+                        className="text-[10px] font-bold text-blue-600 hover:underline uppercase tracking-widest flex items-center gap-1"
+                      >
+                        <UserIcon size={10} /> {customer.name}
+                      </button>
+                    ) : null;
+                  })()}
+                </div>
+              </div>
             </div>
+            <button 
+              onClick={handleDownloadFullReport}
+              disabled={loadingReport}
+              className="px-4 py-2 bg-[#141414] text-white text-[10px] font-bold tracking-widest hover:bg-gray-800 transition-all flex items-center gap-2 disabled:opacity-50"
+            >
+              {loadingReport ? <Clock size={14} className="animate-spin" /> : <Download size={14} />}
+              DOWNLOAD FULL REPORT
+            </button>
           </div>
           {tickets.length === 0 ? (
             <p className="text-center py-12 text-gray-400 text-xs font-mono border border-[#141414] bg-white">NO SERVICE HISTORY FOUND</p>
@@ -2670,6 +3386,288 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
         </div>
       )}
     </motion.div>
+  );
+}
+
+function InventoryView() {
+  const { profile, canEditInventory } = useAuth();
+  const { addToast } = useToast();
+  const [parts, setParts] = useState<Part[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [selectedPart, setSelectedPart] = useState<Part | null>(null);
+  const [isAdding, setIsAdding] = useState(false);
+
+  useEffect(() => {
+    if (!profile) return;
+    const q = query(collection(db, 'parts'), orderBy('name'));
+    const unsub = onSnapshot(q, (snap) => {
+      setParts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Part)));
+      setLoading(false);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'parts'));
+    return unsub;
+  }, []);
+
+  const filtered = parts.filter(p => 
+    p.name.toLowerCase().includes(search.toLowerCase()) || 
+    p.sku.toLowerCase().includes(search.toLowerCase()) ||
+    p.category.toLowerCase().includes(search.toLowerCase())
+  );
+
+  if (loading) return <div className="flex justify-center p-12"><LoadingSpinner /></div>;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div className="relative w-96">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+          <input 
+            type="text" 
+            placeholder="SEARCH INVENTORY..." 
+            className="w-full pl-10 pr-4 py-2 bg-white border border-[#141414] text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#141414]"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        {canEditInventory && (
+          <button 
+            onClick={() => setIsAdding(true)}
+            className="px-4 py-2 bg-[#141414] text-white text-xs font-bold flex items-center gap-2 hover:bg-gray-800 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,0.2)]"
+          >
+            <Plus size={16} /> ADD NEW PART
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+        {filtered.map(p => (
+          <div 
+            key={p.id} 
+            onClick={() => setSelectedPart(p)}
+            className={`bg-white border border-[#141414] p-6 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] hover:shadow-[8px_8px_0px_0px_rgba(20,20,20,1)] transition-all cursor-pointer group relative ${p.quantity <= p.minQuantity ? 'border-amber-500 bg-amber-50/30' : ''}`}
+          >
+            {p.quantity <= p.minQuantity && (
+              <div className="absolute top-2 right-2 flex items-center gap-1 text-[8px] font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 border border-amber-200 uppercase tracking-widest">
+                <AlertCircle size={10} /> Low Stock
+              </div>
+            )}
+            <div className="flex justify-between items-start mb-4">
+              <div className="w-10 h-10 flex items-center justify-center border border-[#141414] bg-gray-50 group-hover:bg-[#141414] group-hover:text-white transition-colors">
+                <Box size={20} />
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-mono text-gray-400 uppercase tracking-widest">{p.category}</p>
+                <p className="text-[10px] font-mono font-bold uppercase tracking-widest">{p.sku}</p>
+              </div>
+            </div>
+            <h3 className="text-sm font-bold uppercase mb-2 line-clamp-1">{p.name}</h3>
+            <div className="flex justify-between items-end">
+              <div>
+                <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">Quantity</p>
+                <p className={`text-2xl font-bold tracking-tighter ${p.quantity <= p.minQuantity ? 'text-red-600' : ''}`}>{p.quantity}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">Unit Price</p>
+                <p className="text-sm font-bold font-mono">${p.unitPrice.toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {(isAdding || selectedPart) && (
+        <PartModal 
+          part={selectedPart} 
+          onClose={() => { setSelectedPart(null); setIsAdding(false); }} 
+        />
+      )}
+    </motion.div>
+  );
+}
+
+function PartModal({ part, onClose }: { part: Part | null, onClose: () => void }) {
+  const { profile, canEditInventory } = useAuth();
+  const { addToast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState<Omit<Part, 'id' | 'updatedAt'>>({
+    name: part?.name || '',
+    sku: part?.sku || '',
+    description: part?.description || '',
+    quantity: part?.quantity || 0,
+    minQuantity: part?.minQuantity || 5,
+    unitPrice: part?.unitPrice || 0,
+    category: part?.category || 'General'
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canEditInventory) return;
+    setLoading(true);
+    try {
+      if (part) {
+        await updateDoc(doc(db, 'parts', part.id), {
+          ...formData,
+          updatedAt: new Date().toISOString()
+        });
+        if (profile) {
+          await logAudit(profile.uid, profile.name, 'UPDATE', 'Part', part.id, `Updated part: ${formData.name}`);
+        }
+        addToast("Part updated successfully", "success");
+      } else {
+        const docRef = await addDoc(collection(db, 'parts'), {
+          ...formData,
+          updatedAt: new Date().toISOString()
+        });
+        if (profile) {
+          await logAudit(profile.uid, profile.name, 'CREATE', 'Part', docRef.id, `Created part: ${formData.name}`);
+        }
+        addToast("Part added successfully", "success");
+      }
+      onClose();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'parts');
+      addToast("Failed to save part", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!part || !canEditInventory || profile?.role !== 'Administrator') return;
+    if (!window.confirm("ARE YOU ABSOLUTELY SURE? THIS CANNOT BE UNDONE.")) return;
+    setLoading(true);
+    try {
+      await deleteDoc(doc(db, 'parts', part.id));
+      if (profile) {
+        await logAudit(profile.uid, profile.name, 'DELETE', 'Part', part.id, `Deleted part: ${part.name}`);
+      }
+      addToast("Part deleted successfully", "success");
+      onClose();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'parts');
+      addToast("Failed to delete part", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white border border-[#141414] max-w-md w-full shadow-[12px_12px_0px_0px_rgba(20,20,20,1)] overflow-hidden"
+      >
+        <div className="p-6 border-b border-[#141414] bg-gray-50 flex justify-between items-center">
+          <h2 className="text-xl font-bold tracking-tighter uppercase italic">{part ? 'Edit Part' : 'Add New Part'}</h2>
+          <button onClick={onClose} className="p-1 hover:bg-gray-200 transition-colors border border-[#141414]">
+            <Plus className="rotate-45" size={20} />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Part Name *</label>
+              <input 
+                required
+                type="text"
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+                value={formData.name}
+                onChange={e => setFormData({ ...formData, name: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">SKU / Part Number *</label>
+              <input 
+                required
+                type="text"
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+                value={formData.sku}
+                onChange={e => setFormData({ ...formData, sku: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Category</label>
+              <select 
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+                value={formData.category}
+                onChange={e => setFormData({ ...formData, category: e.target.value })}
+              >
+                <option value="General">General</option>
+                <option value="Engine">Engine</option>
+                <option value="Hydraulics">Hydraulics</option>
+                <option value="Electrical">Electrical</option>
+                <option value="Tires">Tires</option>
+                <option value="Filters">Filters</option>
+                <option value="Fluids">Fluids</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Quantity *</label>
+              <input 
+                required
+                type="number"
+                min="0"
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+                value={formData.quantity}
+                onChange={e => setFormData({ ...formData, quantity: parseInt(e.target.value) || 0 })}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Min Quantity *</label>
+              <input 
+                required
+                type="number"
+                min="0"
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+                value={formData.minQuantity}
+                onChange={e => setFormData({ ...formData, minQuantity: parseInt(e.target.value) || 0 })}
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Unit Price ($) *</label>
+              <input 
+                required
+                type="number"
+                step="0.01"
+                min="0"
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+                value={formData.unitPrice}
+                onChange={e => setFormData({ ...formData, unitPrice: parseFloat(e.target.value) || 0 })}
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Description</label>
+              <textarea 
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none h-20"
+                value={formData.description}
+                onChange={e => setFormData({ ...formData, description: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div className="pt-4 flex gap-3">
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="flex-1 py-3 bg-[#141414] text-white text-xs font-bold uppercase tracking-widest hover:bg-gray-800 transition-all disabled:opacity-50"
+            >
+              {loading ? 'SAVING...' : (part ? 'UPDATE PART' : 'ADD PART')}
+            </button>
+            {part && profile?.role === 'Administrator' && (
+              <button 
+                type="button"
+                onClick={handleDelete}
+                disabled={loading}
+                className="px-4 py-3 border border-red-600 text-red-600 hover:bg-red-50 transition-all disabled:opacity-50"
+              >
+                <Trash2 size={18} />
+              </button>
+            )}
+          </div>
+        </form>
+      </motion.div>
+    </div>
   );
 }
 
@@ -2708,6 +3706,15 @@ function TicketLogs({ ticketId, ticket, machinery, customer }: { ticketId: strin
           </div>
           <p className="text-xs">{log.workDone}</p>
           {log.partsReplaced && <p className="text-[10px] text-blue-600 font-bold mt-1 uppercase">Parts: {log.partsReplaced}</p>}
+          {log.usedParts && log.usedParts.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-1">
+              {log.usedParts.map((up, idx) => (
+                <span key={idx} className="text-[9px] font-bold bg-blue-50 text-blue-600 border border-blue-100 px-1.5 py-0.5 uppercase">
+                  {up.partName} x{up.quantity}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -2715,12 +3722,13 @@ function TicketLogs({ ticketId, ticket, machinery, customer }: { ticketId: strin
 }
 
 function MechanicsView() {
-  const { profile } = useAuth();
+  const { profile, canEditMechanics } = useAuth();
   const { addToast } = useToast();
   const [mechanics, setMechanics] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMechanic, setEditingMechanic] = useState<UserProfile | null>(null);
+  const [selectedMechanic, setSelectedMechanic] = useState<UserProfile | null>(null);
 
   useEffect(() => {
     if (!profile) return;
@@ -2757,12 +3765,14 @@ function MechanicsView() {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xs font-bold tracking-[0.2em] text-gray-400 uppercase italic">Team & Personnel Management</h2>
-        <button 
-          onClick={() => { setEditingMechanic(null); setIsModalOpen(true); }}
-          className="px-4 py-2 bg-[#141414] text-white text-xs font-bold flex items-center gap-2 hover:bg-gray-800 transition-all"
-        >
-          <Plus size={16} /> ADD TEAM MEMBER
-        </button>
+        {canEditMechanics && (
+          <button 
+            onClick={() => { setEditingMechanic(null); setIsModalOpen(true); }}
+            className="px-4 py-2 bg-[#141414] text-white text-xs font-bold flex items-center gap-2 hover:bg-gray-800 transition-all"
+          >
+            <Plus size={16} /> ADD TEAM MEMBER
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -2793,19 +3803,29 @@ function MechanicsView() {
                 </div>
               </div>
             </div>
-            <div className="flex gap-2 pt-4 border-t border-gray-100">
+            <div className="flex flex-col gap-2 pt-4 border-t border-gray-100">
               <button 
-                onClick={() => { setEditingMechanic(m); setIsModalOpen(true); }}
-                className="flex-1 py-2 border border-[#141414] text-[10px] font-bold hover:bg-gray-50 transition-colors uppercase"
+                onClick={() => setSelectedMechanic(m)}
+                className="w-full py-2 bg-[#141414] text-white text-[10px] font-bold hover:bg-gray-800 transition-colors uppercase flex items-center justify-center gap-2"
               >
-                Edit Role
+                <Wrench size={12} /> View Performance
               </button>
-              <button 
-                onClick={() => handleDelete(m.uid)}
-                className="px-3 py-2 border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
-              >
-                <LogOut size={14} className="rotate-180" />
-              </button>
+              {canEditMechanics && (
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => { setEditingMechanic(m); setIsModalOpen(true); }}
+                    className="flex-1 py-2 border border-[#141414] text-[10px] font-bold hover:bg-gray-50 transition-colors uppercase"
+                  >
+                    Edit Role
+                  </button>
+                  <button 
+                    onClick={() => handleDelete(m.uid)}
+                    className="px-3 py-2 border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
+                  >
+                    <LogOut size={14} className="rotate-180" />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -2817,7 +3837,139 @@ function MechanicsView() {
           onClose={() => setIsModalOpen(false)} 
         />
       )}
+
+      {selectedMechanic && (
+        <MechanicDetailModal 
+          mechanic={selectedMechanic} 
+          onClose={() => setSelectedMechanic(null)} 
+        />
+      )}
     </motion.div>
+  );
+}
+
+function MechanicDetailModal({ mechanic, onClose }: { mechanic: UserProfile, onClose: () => void }) {
+  const [tickets, setTickets] = useState<ServiceTicket[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [machinery, setMachinery] = useState<Record<string, Machinery>>({});
+
+  useEffect(() => {
+    const q = query(collection(db, 'serviceTickets'), where('mechanicId', '==', mechanic.uid));
+    const unsub = onSnapshot(q, async (snap) => {
+      const ticketData = snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceTicket));
+      setTickets(ticketData);
+      
+      // Fetch unique machinery info
+      const machineIds = [...new Set(ticketData.map(t => t.machineryId))];
+      const machineMap: Record<string, Machinery> = {};
+      
+      await Promise.all(machineIds.map(async (id) => {
+        const d = await getDoc(doc(db, 'machinery', id));
+        if (d.exists()) {
+          machineMap[id] = { id: d.id, ...d.data() } as Machinery;
+        }
+      }));
+      
+      setMachinery(machineMap);
+      setLoading(false);
+    });
+    return unsub;
+  }, [mechanic.uid]);
+
+  const stats = useMemo(() => {
+    const total = tickets.length;
+    const completed = tickets.filter(t => t.status === 'Completed').length;
+    const open = tickets.filter(t => t.status === 'Open').length;
+    const inProgress = tickets.filter(t => t.status === 'In Progress').length;
+    const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    return { total, completed, open, inProgress, completionRate };
+  }, [tickets]);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white border border-[#141414] max-w-4xl w-full h-[85vh] shadow-[12px_12px_0px_0px_rgba(20,20,20,1)] flex flex-col"
+      >
+        <div className="p-6 border-b border-[#141414] flex justify-between items-center bg-gray-50">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-[#141414] text-white rounded-full flex items-center justify-center text-xl font-bold">
+              {mechanic.name.charAt(0)}
+            </div>
+            <div>
+              <h2 className="text-xl font-bold tracking-tighter uppercase italic">{mechanic.name}</h2>
+              <p className="text-[10px] font-mono text-gray-400 uppercase tracking-widest">{mechanic.role} • Joined {new Date(mechanic.createdAt).toLocaleDateString()}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-gray-200 transition-colors border border-[#141414]">
+            <Plus className="rotate-45" size={20} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-auto p-8">
+          {loading ? (
+            <div className="flex justify-center p-12"><LoadingSpinner /></div>
+          ) : (
+            <div className="space-y-8">
+              {/* Stats Grid */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+                  <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Total Assigned</p>
+                  <p className="text-2xl font-bold">{stats.total}</p>
+                </div>
+                <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+                  <p className="text-[10px] font-bold text-green-600 uppercase mb-1">Completed</p>
+                  <p className="text-2xl font-bold">{stats.completed}</p>
+                </div>
+                <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+                  <p className="text-[10px] font-bold text-red-600 uppercase mb-1">Open Tickets</p>
+                  <p className="text-2xl font-bold">{stats.open}</p>
+                </div>
+                <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+                  <p className="text-[10px] font-bold text-blue-600 uppercase mb-1">Completion Rate</p>
+                  <p className="text-2xl font-bold">{stats.completionRate}%</p>
+                </div>
+              </div>
+
+              {/* Tickets List */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-bold tracking-widest uppercase italic border-b border-[#141414] pb-2">Assigned Service Tickets</h3>
+                <div className="space-y-3">
+                  {tickets.length === 0 ? (
+                    <p className="text-center py-12 text-gray-400 text-xs font-mono border border-dashed border-gray-300">NO TICKETS ASSIGNED TO THIS MECHANIC</p>
+                  ) : (
+                    tickets.sort((a, b) => new Date(b.openedAt).getTime() - new Date(a.openedAt).getTime()).map(t => (
+                      <div key={t.id} className="flex items-center justify-between p-4 border border-[#141414] bg-white hover:bg-gray-50 transition-colors">
+                        <div className="flex items-center gap-4">
+                          <div className={`w-8 h-8 flex items-center justify-center border border-[#141414] ${
+                            t.status === 'Open' ? 'bg-red-50 text-red-600' : 
+                            t.status === 'In Progress' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
+                          }`}>
+                            {machinery[t.machineryId] ? getMachineryIcon(machinery[t.machineryId].type, 16) : <Ticket size={16} />}
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-tight">{t.description}</p>
+                            <p className="text-[9px] font-mono text-gray-400 uppercase">{machinery[t.machineryId]?.model || 'Unknown Machine'} • {new Date(t.openedAt).toLocaleDateString()}</p>
+                          </div>
+                        </div>
+                        <span className={`text-[9px] font-bold px-2 py-0.5 border border-[#141414] uppercase ${
+                          t.status === 'Open' ? 'bg-red-50 text-red-600' : 
+                          t.status === 'In Progress' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
+                        }`}>
+                          {t.status}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </div>
   );
 }
 

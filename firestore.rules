@@ -19,13 +19,16 @@ service cloud.firestore {
     // Fields: machineryId, customerId, mechanicId, status, description, openedAt, closedAt
     //
     // Collection: serviceTickets/{ticketId}/logs
-    // Fields: ticketId, mechanicId, workDone, partsReplaced, timestamp
+    // Fields: ticketId, mechanicId, workDone, partsReplaced, usedParts, timestamp
     //
     // Collection: auditLogs
     // Fields: userId, userName, action, entityType, entityId, details, timestamp
     //
     // Collection: notifications
     // Fields: customerId, customerName, customerEmail, machineryId, machineryModel, type, status, sentAt, message
+    //
+    // Collection: parts
+    // Fields: name, sku, description, quantity, minQuantity, unitPrice, category, updatedAt
     //
     // ===============================================================
 
@@ -104,11 +107,25 @@ service cloud.firestore {
 
     function isValidLog(data) {
       return data.keys().hasAll(['ticketId', 'mechanicId', 'workDone', 'timestamp']) &&
-             data.keys().hasOnly(['ticketId', 'mechanicId', 'workDone', 'partsReplaced', 'timestamp']) &&
+             data.keys().hasOnly(['ticketId', 'mechanicId', 'workDone', 'partsReplaced', 'usedParts', 'timestamp']) &&
              data.ticketId is string &&
              data.mechanicId is string &&
              data.workDone is string && data.workDone.size() > 0 && data.workDone.size() < 2000 &&
-             (!('partsReplaced' in data) || (data.partsReplaced is string && data.partsReplaced.size() < 1000));
+             (!('partsReplaced' in data) || (data.partsReplaced is string && data.partsReplaced.size() < 1000)) &&
+             (!('usedParts' in data) || (data.usedParts is list));
+    }
+
+    function isValidPart(data) {
+      return data.keys().hasAll(['name', 'sku', 'quantity', 'unitPrice']) &&
+             data.keys().hasOnly(['name', 'sku', 'description', 'quantity', 'minQuantity', 'unitPrice', 'category', 'updatedAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.sku is string && data.sku.size() > 0 && data.sku.size() < 50 &&
+             data.quantity is int &&
+             data.unitPrice is number &&
+             (!('description' in data) || (data.description is string && data.description.size() < 1000)) &&
+             (!('minQuantity' in data) || data.minQuantity is int) &&
+             (!('category' in data) || (data.category is string && data.category.size() < 100)) &&
+             (!('updatedAt' in data) || data.updatedAt is string);
     }
 
     function isValidAuditLog(data) {
@@ -123,15 +140,19 @@ service cloud.firestore {
     }
 
     function isValidNotification(data) {
-      return data.keys().hasAll(['customerId', 'customerName', 'customerEmail', 'machineryId', 'type', 'status', 'sentAt']) &&
-             data.keys().hasOnly(['customerId', 'customerName', 'customerEmail', 'machineryId', 'machineryModel', 'type', 'status', 'sentAt', 'message']) &&
-             data.customerId is string &&
-             data.customerName is string &&
-             data.customerEmail is string &&
-             data.machineryId is string &&
-             data.type == 'SERVICE_REMINDER' &&
-             data.status in ['SENT', 'FAILED', 'MOCKED'] &&
-             data.sentAt is string;
+      return data.keys().hasAll(['type', 'status', 'sentAt', 'message']) &&
+             data.keys().hasOnly(['customerId', 'customerName', 'customerEmail', 'machineryId', 'machineryModel', 'partId', 'partName', 'type', 'status', 'sentAt', 'message']) &&
+             (!('customerId' in data) || data.customerId is string) &&
+             (!('customerName' in data) || data.customerName is string) &&
+             (!('customerEmail' in data) || data.customerEmail is string) &&
+             (!('machineryId' in data) || data.machineryId is string) &&
+             (!('machineryModel' in data) || data.machineryModel is string) &&
+             (!('partId' in data) || data.partId is string) &&
+             (!('partName' in data) || data.partName is string) &&
+             data.type in ['SERVICE_REMINDER', 'LOW_STOCK'] &&
+             data.status in ['SENT', 'FAILED', 'MOCKED', 'SYSTEM'] &&
+             data.sentAt is string &&
+             data.message is string;
     }
 
     // ===============================================================
@@ -180,9 +201,19 @@ service cloud.firestore {
     }
 
     match /notifications/{notificationId} {
-      allow read: if isAdmin();
-      allow create: if false; // Only created via server-side Admin SDK
+      allow read: if isTechnician();
+      allow create: if isTechnician() && isValidNotification(request.resource.data);
       allow update, delete: if false;
+    }
+
+    match /parts/{partId} {
+      allow read: if isAuthenticated();
+      allow create: if isManager() && isValidPart(request.resource.data);
+      allow update: if (isManager() && isValidPart(request.resource.data)) || 
+                      (isTechnician() && 
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quantity', 'updatedAt']) &&
+                       isValidPart(request.resource.data));
+      allow delete: if isAdmin();
     }
 
     // Default deny

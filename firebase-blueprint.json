@@ -67,9 +67,36 @@
         "mechanicId": { "type": "string" },
         "workDone": { "type": "string" },
         "partsReplaced": { "type": "string" },
+        "usedParts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "partId": { "type": "string" },
+              "partName": { "type": "string" },
+              "quantity": { "type": "integer" }
+            }
+          }
+        },
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["ticketId", "mechanicId", "workDone", "timestamp"]
+    },
+    "Part": {
+      "title": "Part",
+      "description": "Inventory item for machinery parts",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "sku": { "type": "string" },
+        "description": { "type": "string" },
+        "quantity": { "type": "integer" },
+        "minQuantity": { "type": "integer" },
+        "unitPrice": { "type": "number" },
+        "category": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "sku", "quantity", "unitPrice"]
     },
     "AuditLog": {
       "title": "Audit Log",
@@ -88,7 +115,7 @@
     },
     "Notification": {
       "title": "Notification",
-      "description": "A notification sent to a customer",
+      "description": "A notification sent to a customer or system alert",
       "type": "object",
       "properties": {
         "customerId": { "type": "string" },
@@ -96,12 +123,14 @@
         "customerEmail": { "type": "string" },
         "machineryId": { "type": "string" },
         "machineryModel": { "type": "string" },
-        "type": { "type": "string", "enum": ["SERVICE_REMINDER"] },
-        "status": { "type": "string", "enum": ["SENT", "FAILED", "MOCKED"] },
+        "partId": { "type": "string" },
+        "partName": { "type": "string" },
+        "type": { "type": "string", "enum": ["SERVICE_REMINDER", "LOW_STOCK"] },
+        "status": { "type": "string", "enum": ["SENT", "FAILED", "MOCKED", "SYSTEM"] },
         "sentAt": { "type": "string", "format": "date-time" },
         "message": { "type": "string" }
       },
-      "required": ["customerId", "customerName", "customerEmail", "machineryId", "type", "status", "sentAt"]
+      "required": ["type", "status", "sentAt", "message"]
     }
   },
   "firestore": {
@@ -111,6 +140,7 @@
     "/serviceTickets/{ticketId}": { "schema": "ServiceTicket", "description": "Service tickets" },
     "/serviceTickets/{ticketId}/logs/{logId}": { "schema": "ServiceLog", "description": "Logs for a specific ticket" },
     "/auditLogs/{logId}": { "schema": "AuditLog", "description": "System audit logs" },
-    "/notifications/{notificationId}": { "schema": "Notification", "description": "Sent notifications" }
+    "/notifications/{notificationId}": { "schema": "Notification", "description": "Sent notifications" },
+    "/parts/{partId}": { "schema": "Part", "description": "Inventory parts" }
   }
 }
