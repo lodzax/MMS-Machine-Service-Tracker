@@ -47,12 +47,14 @@ export interface ServiceTicket {
   description: string;
   openedAt: string;
   closedAt?: string;
+  satisfactionScore?: number; // 1-5
 }
 
 export interface ServiceLog {
   id: string;
   ticketId: string;
   mechanicId: string;
+  mechanicName: string;
   workDone: string;
   partsReplaced?: string;
   usedParts?: UsedPart[];
@@ -72,8 +74,9 @@ export interface Part {
 }
 
 export interface UsedPart {
-  partId: string;
+  partId?: string;
   partName: string;
+  sku: string;
   quantity: number;
 }
 

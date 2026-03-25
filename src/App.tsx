@@ -1,14 +1,14 @@
 import React, { useState, useEffect, createContext, useContext, useMemo } from 'react';
 import { 
-  auth, db, loginWithGoogle, logout, onAuthStateChanged, FirebaseUser,
-  collection, doc, getDoc, getDocs, setDoc, updateDoc, addDoc, deleteDoc, query, where, onSnapshot, orderBy, limit, writeBatch,
-  OperationType, handleFirestoreError, logAudit
-} from './firebase';
+  supabase, signIn, signUp, logout, onAuthStateChanged,
+  OperationType, handleSupabaseError, logAudit
+} from './supabase';
 import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification, Part, UsedPart } from './types';
+import { GoogleGenAI, Type } from "@google/genai";
 import { 
-  LayoutDashboard, Users, Construction, Ticket, History, LogOut, Search, Plus, Trash2,
-  CheckCircle2, AlertCircle, Clock, ChevronRight, Settings, Wrench, Phone, Mail, MapPin, Calendar, User as UserIcon, Filter, FileText, Download,
-  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge
+  LayoutDashboard, Users, Construction, Ticket, History, LogOut, Search, Plus, Trash2, Bell,
+  CheckCircle2, AlertCircle, Clock, ChevronRight, Settings, Wrench, Phone, Mail, MapPin, Calendar, User as UserIcon, Filter, FileText, Download, BarChart3,
+  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge, Sparkles, BrainCircuit
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
@@ -79,7 +79,7 @@ const ToastProvider = ({ children }: { children: React.ReactNode }) => {
 };
 
 interface AuthContextType {
-  user: FirebaseUser | null;
+  user: any | null;
   profile: UserProfile | null;
   loading: boolean;
   isAdmin: boolean;
@@ -189,50 +189,94 @@ export default function App() {
 
 function AppContent() {
   const { addToast } = useToast();
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [user, setUser] = useState<any | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    try {
+      if (isSignUp) {
+        await signUp(email, password);
+        addToast('Verification email sent! Please check your inbox.', 'info');
+      } else {
+        await signIn(email, password);
+      }
+    } catch (error: any) {
+      addToast(error.message, 'error');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
+    const unsubscribe = onAuthStateChanged(async (supabaseUser) => {
+      setUser(supabaseUser);
+      if (supabaseUser) {
         try {
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          if (userDoc.exists()) {
-            const currentProfile = userDoc.data() as UserProfile;
+          const { data: userDoc, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('uid', supabaseUser.id)
+            .single();
+
+          if (userDoc) {
+            const currentProfile: UserProfile = {
+              uid: userDoc.uid,
+              name: userDoc.name,
+              email: userDoc.email,
+              role: userDoc.role,
+              createdAt: userDoc.created_at
+            };
             // Automatically upgrade specific user to admin if needed
             if (currentProfile.email === 'lodzax@gmail.com' && currentProfile.role !== 'Administrator') {
               const updatedProfile = { ...currentProfile, role: 'Administrator' as UserRole };
-              await updateDoc(doc(db, 'users', firebaseUser.uid), { role: 'Administrator' });
+              await supabase
+                .from('users')
+                .update({ role: 'Administrator' })
+                .eq('uid', supabaseUser.id);
+              
               setTimeout(() => {
                 setProfile(updatedProfile);
               }, 500);
-              await logAudit(firebaseUser.uid, currentProfile.name, 'UPDATE', 'User', firebaseUser.uid, 'Auto-assigned Administrator role');
+              await logAudit(supabaseUser.id, currentProfile.name, 'UPDATE', 'User', supabaseUser.id, 'Auto-assigned Administrator role');
               addToast("Administrator role auto-assigned", "info");
             } else {
               setProfile(currentProfile);
             }
           } else {
             // Create default profile for first-time login
-            const isAdmin = firebaseUser.email === 'lodzax@gmail.com';
-            const newProfile: UserProfile = {
-              uid: firebaseUser.uid,
-              name: firebaseUser.displayName || 'New User',
-              email: firebaseUser.email || '',
+            const isAdmin = supabaseUser.email === 'lodzax@gmail.com';
+            const newProfileData = {
+              uid: supabaseUser.id,
+              name: supabaseUser.user_metadata?.full_name || 'New User',
+              email: supabaseUser.email || '',
               role: isAdmin ? 'Administrator' : 'Field Technician',
-              createdAt: new Date().toISOString()
+              created_at: new Date().toISOString()
             };
-            await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
-            // Small delay to allow Firestore rules to propagate the new document
+            await supabase.from('users').insert(newProfileData);
+            
+            const newProfile: UserProfile = {
+              uid: newProfileData.uid,
+              name: newProfileData.name,
+              email: newProfileData.email,
+              role: newProfileData.role as UserRole,
+              createdAt: newProfileData.created_at
+            };
+            
             setTimeout(() => {
               setProfile(newProfile);
             }, 1000);
             addToast("Account initialized successfully", "success");
-            await logAudit(firebaseUser.uid, newProfile.name, 'CREATE', 'User', firebaseUser.uid, 'Initial profile creation' + (isAdmin ? ' (Administrator)' : ''));
+            await logAudit(supabaseUser.id, newProfile.name, 'CREATE', 'User', supabaseUser.id, 'Initial profile creation' + (isAdmin ? ' (Administrator)' : ''));
           }
         } catch (error) {
           console.error("Error fetching profile:", error);
@@ -276,19 +320,61 @@ function AppContent() {
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white border border-[#141414] p-12 max-w-lg w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)] text-center"
+          className="bg-white border border-[#141414] p-12 max-w-lg w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
         >
-          <Wrench className="w-16 h-16 mx-auto mb-6 text-[#141414]" />
-          <h1 className="text-4xl font-bold mb-2 tracking-tighter">SERVICE TRACKER</h1>
-          <p className="text-gray-500 mb-8 font-mono italic">Machinery Maintenance & Warranty Management</p>
-          <button 
-            onClick={loginWithGoogle}
-            className="w-full py-4 bg-[#141414] text-white font-bold hover:bg-gray-800 transition-all flex items-center justify-center gap-3"
-          >
-            <UserIcon size={20} />
-            SIGN IN WITH GOOGLE
-          </button>
-          <p className="mt-6 text-xs text-gray-400 uppercase tracking-widest">Authorized Personnel Only</p>
+          <div className="text-center mb-8">
+            <Wrench className="w-16 h-16 mx-auto mb-6 text-[#141414]" />
+            <h1 className="text-4xl font-bold mb-2 tracking-tighter">SERVICE TRACKER</h1>
+            <p className="text-gray-500 font-mono italic">Machinery Maintenance & Warranty Management</p>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-widest mb-1">Email Address</label>
+              <input 
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="w-full p-3 border-2 border-[#141414] focus:bg-gray-50 outline-none font-mono"
+                placeholder="name@company.com"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-widest mb-1">Password</label>
+              <input 
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="w-full p-3 border-2 border-[#141414] focus:bg-gray-50 outline-none font-mono"
+                placeholder="••••••••"
+              />
+            </div>
+            <button 
+              type="submit"
+              disabled={authLoading}
+              className="w-full py-4 bg-[#141414] text-white font-bold hover:bg-gray-800 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+            >
+              {authLoading ? (
+                <RotateCw className="animate-spin" size={20} />
+              ) : (
+                <UserIcon size={20} />
+              )}
+              {isSignUp ? 'CREATE ACCOUNT' : 'SIGN IN'}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button 
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="text-xs font-bold uppercase tracking-widest hover:underline"
+            >
+              {isSignUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
+            </button>
+          </div>
+
+          <p className="mt-8 text-center text-[10px] text-gray-400 uppercase tracking-[0.2em]">Authorized Personnel Only</p>
         </motion.div>
       </div>
     );
@@ -310,6 +396,101 @@ function AppContent() {
   );
 }
 
+function NotificationBell() {
+  const [notifications, setNotifications] = useState<ServiceNotification[]>([]);
+  const [isOpen, setIsOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    // Only show SYSTEM/LOW_STOCK notifications in the bell for now
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('status', 'SYSTEM')
+        .order('sent_at', { ascending: false })
+        .limit(10);
+      
+      if (error) {
+        console.error("Notification fetch error:", error);
+      } else {
+        setNotifications(data as ServiceNotification[]);
+        setUnreadCount(data.length);
+      }
+    };
+
+    fetchNotifications();
+
+    const subscription = supabase
+      .channel('notifications_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: 'status=eq.SYSTEM' }, () => {
+        fetchNotifications();
+      })
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  return (
+    <div className="relative">
+      <button 
+        onClick={() => { setIsOpen(!isOpen); setUnreadCount(0); }}
+        className="p-2 hover:bg-gray-100 transition-colors border border-[#141414] relative"
+      >
+        <Bell size={18} />
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 text-white text-[8px] font-bold flex items-center justify-center rounded-full border border-white">
+            {unreadCount}
+          </span>
+        )}
+      </button>
+
+      <AnimatePresence>
+        {isOpen && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
+            <motion.div 
+              initial={{ opacity: 0, y: 10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.95 }}
+              className="absolute right-0 mt-2 w-80 bg-white border border-[#141414] shadow-[8px_8px_0px_0px_rgba(20,20,20,1)] z-50 overflow-hidden"
+            >
+              <div className="p-3 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
+                <h3 className="text-[10px] font-bold uppercase tracking-widest italic">System Alerts</h3>
+                <span className="text-[8px] font-mono text-gray-400 uppercase">Recent Activity</span>
+              </div>
+              <div className="max-h-96 overflow-auto">
+                {notifications.length === 0 ? (
+                  <div className="p-8 text-center text-gray-400 text-[10px] font-mono italic">
+                    NO ACTIVE ALERTS
+                  </div>
+                ) : (
+                  notifications.map(n => (
+                    <div key={n.id} className="p-4 border-b border-gray-100 hover:bg-gray-50 transition-colors last:border-0">
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 text-amber-600">
+                          <AlertCircle size={14} />
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase mb-1">{n.type.replace('_', ' ')}</p>
+                          <p className="text-[11px] text-gray-600 leading-tight mb-2">{n.message}</p>
+                          <p className="text-[8px] font-mono text-gray-400 uppercase">{new Date(n.sentAt).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function AppLayout({ 
   activeTab, 
   setActiveTab, 
@@ -325,7 +506,7 @@ function AppLayout({
   selectedCustomerId: string | null,
   setSelectedCustomerId: (id: string | null) => void
 }) {
-  const { profile, canViewAuditLogs, canEditMechanics, canViewMechanics } = useAuth();
+  const { profile, isAdmin, canViewAuditLogs, canEditMechanics, canViewMechanics } = useAuth();
 
   return (
     <div className="min-h-screen bg-[#E4E3E0] flex font-sans text-[#141414]">
@@ -348,6 +529,9 @@ function AppLayout({
           )}
           {canViewAuditLogs && (
             <NavItem active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} icon={<FileText size={18} />} label="AUDIT LOGS" />
+          )}
+          {isAdmin && (
+            <NavItem active={activeTab === 'reports'} onClick={() => setActiveTab('reports')} icon={<BarChart3 size={18} />} label="REPORTS" />
           )}
         </nav>
         <div className="p-4 border-t border-[#141414]">
@@ -373,9 +557,12 @@ function AppLayout({
       <main className="flex-1 overflow-auto">
         <header className="h-16 border-b border-[#141414] bg-white flex items-center justify-between px-8 sticky top-0 z-10">
           <h1 className="text-sm font-bold tracking-widest uppercase">{activeTab}</h1>
-          <div className="flex items-center gap-4 text-xs font-mono">
-            <span className="text-gray-400">{new Date().toLocaleDateString()}</span>
-            <span className="px-2 py-1 bg-green-100 text-green-800 border border-green-200">SYSTEM ONLINE</span>
+          <div className="flex items-center gap-6">
+            <NotificationBell />
+            <div className="flex items-center gap-4 text-xs font-mono">
+              <span className="text-gray-400 hidden sm:inline">{new Date().toLocaleDateString()}</span>
+              <span className="px-2 py-1 bg-green-100 text-green-800 border border-green-200">SYSTEM ONLINE</span>
+            </div>
           </div>
         </header>
 
@@ -407,6 +594,7 @@ function AppLayout({
             )}
             {activeTab === 'mechanics' && canViewMechanics && <MechanicsView key="mechanics" />}
             {activeTab === 'audit' && canViewAuditLogs && <AuditLogsView key="audit" />}
+            {activeTab === 'reports' && isAdmin && <ReportsView key="reports" />}
           </AnimatePresence>
         </div>
       </main>
@@ -434,21 +622,70 @@ function AuditLogsView() {
       .then(data => setEmailMode(data.emailMode))
       .catch(err => console.error("Failed to fetch config:", err));
 
-    const qAudit = query(collection(db, 'auditLogs'), orderBy('timestamp', 'desc'), limit(100));
-    const unsubAudit = onSnapshot(qAudit, (snap) => {
-      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      if (activeTab === 'audit') setLoading(false);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'auditLogs'));
+    const fetchAuditLogs = async () => {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(100);
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'audit_logs');
+      } else {
+        const mappedLogs = (data as any[]).map(l => ({
+          ...l,
+          userId: l.user_id,
+          userName: l.user_name,
+          entityType: l.entity_type,
+          entityId: l.entity_id
+        }));
+        setLogs(mappedLogs);
+        if (activeTab === 'audit') setLoading(false);
+      }
+    };
 
-    const qNotif = query(collection(db, 'notifications'), orderBy('sentAt', 'desc'), limit(100));
-    const unsubNotif = onSnapshot(qNotif, (snap) => {
-      setNotifications(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceNotification)));
-      if (activeTab === 'notifications') setLoading(false);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'notifications'));
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .order('sent_at', { ascending: false })
+        .limit(100);
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'notifications');
+      } else {
+        const mappedNotifs = (data as any[]).map(n => ({
+          ...n,
+          customerId: n.customer_id,
+          customerName: n.customer_name,
+          customerEmail: n.customer_email,
+          machineryId: n.machinery_id,
+          machineryModel: n.machinery_model,
+          partId: n.part_id,
+          partName: n.part_name,
+          sentAt: n.sent_at
+        })) as ServiceNotification[];
+        setNotifications(mappedNotifs);
+        if (activeTab === 'notifications') setLoading(false);
+      }
+    };
+
+    fetchAuditLogs();
+    fetchNotifications();
+
+    const auditSub = supabase
+      .channel('audit_logs_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => fetchAuditLogs())
+      .subscribe();
+
+    const notifSub = supabase
+      .channel('notifications_all_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => fetchNotifications())
+      .subscribe();
 
     return () => {
-      unsubAudit();
-      unsubNotif();
+      auditSub.unsubscribe();
+      notifSub.unsubscribe();
     };
   }, [activeTab]);
 
@@ -570,7 +807,7 @@ function AuditLogsView() {
                     </td>
                     <td className="p-3">
                       <span className="text-gray-400 uppercase mr-1">{log.entityType}:</span>
-                      <span className="font-bold">{log.entityId.slice(0, 8)}</span>
+                      <span className="font-bold">{log.entityId?.slice(0, 8)}</span>
                     </td>
                     <td className="p-3 text-gray-600 italic truncate max-w-xs">{log.details}</td>
                   </tr>
@@ -615,7 +852,7 @@ function AuditLogsView() {
                       </td>
                       <td className="p-3">
                         <div className="font-bold">{notif.machineryModel}</div>
-                        <div className="text-[9px] text-gray-400">ID: {notif.machineryId.slice(0, 8)}</div>
+                        <div className="text-[9px] text-gray-400">ID: {notif.machineryId?.slice(0, 8)}</div>
                       </td>
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
@@ -697,6 +934,324 @@ function AuditLogsView() {
   );
 }
 
+function ReportsView() {
+  const { profile, isAdmin } = useAuth();
+  const { addToast } = useToast();
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [mechanics, setMechanics] = useState<UserProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  
+  // Filters
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>('all');
+  const [selectedMechanicId, setSelectedMechanicId] = useState<string>('all');
+  const [startDate, setStartDate] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
+  
+  const [reportResults, setReportResults] = useState<{
+    ticket: ServiceTicket;
+    customer: Customer;
+    machinery: Machinery;
+    logs: ServiceLog[];
+  }[]>([]);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [custRes, mechRes] = await Promise.all([
+          supabase.from('customers').select('*'),
+          supabase.from('users').select('*').in('role', ['Field Technician', 'Manager', 'Administrator'])
+        ]);
+        
+        if (custRes.error) throw custRes.error;
+        if (mechRes.error) throw mechRes.error;
+
+        setCustomers(custRes.data as Customer[]);
+        setMechanics((mechRes.data as any[]).map(u => ({
+          uid: u.uid,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          createdAt: u.created_at
+        } as UserProfile)));
+      } catch (err) {
+        handleSupabaseError(err, OperationType.LIST, 'reports-init');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const handleGenerateReport = async () => {
+    setGenerating(true);
+    try {
+      let query = supabase.from('service_tickets').select('*').order('opened_at', { ascending: false });
+      
+      if (selectedCustomerId !== 'all') {
+        query = query.eq('customer_id', selectedCustomerId);
+      }
+      
+      if (selectedMechanicId !== 'all') {
+        query = query.eq('mechanic_id', selectedMechanicId);
+      }
+
+      const { data: tickets, error: ticketError } = await query;
+      if (ticketError) throw ticketError;
+      
+      const mappedTickets = (tickets as any[]).map(t => ({
+        ...t,
+        machineryId: t.machinery_id,
+        customerId: t.customer_id,
+        mechanicId: t.mechanic_id,
+        openedAt: t.opened_at,
+        closedAt: t.closed_at,
+        satisfactionScore: t.satisfaction_score
+      })) as ServiceTicket[];
+
+      // Filter by date range client-side
+      const filteredTickets = mappedTickets.filter(t => {
+        const openedAt = new Date(t.openedAt);
+        if (startDate && openedAt < new Date(startDate)) return false;
+        if (endDate) {
+          const end = new Date(endDate);
+          end.setHours(23, 59, 59, 999);
+          if (openedAt > end) return false;
+        }
+        return true;
+      });
+
+      // Fetch related data for each ticket
+      const results = await Promise.all(filteredTickets.map(async (ticket) => {
+        const [custRes, machRes, logsRes] = await Promise.all([
+          supabase.from('customers').select('*').eq('id', ticket.customerId).single(),
+          supabase.from('machinery').select('*').eq('id', ticket.machineryId).single(),
+          supabase.from('service_logs').select('*').eq('ticket_id', ticket.id).order('timestamp', { ascending: true })
+        ]);
+        
+        if (custRes.error) throw custRes.error;
+        if (machRes.error) throw machRes.error;
+        if (logsRes.error) throw logsRes.error;
+
+        return {
+          ticket,
+          customer: custRes.data as Customer,
+          machinery: machRes.data as Machinery,
+          logs: logsRes.data as ServiceLog[]
+        };
+      }));
+
+      setReportResults(results);
+      if (results.length === 0) {
+        addToast("No records found for the selected filters", "info");
+      }
+    } catch (err) {
+      handleSupabaseError(err, OperationType.LIST, 'generate-report');
+      addToast("Failed to generate report", "error");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const downloadPDF = () => {
+    if (reportResults.length === 0) return;
+    
+    const doc = new jsPDF();
+    const timestamp = new Date().toLocaleString();
+    
+    // Header
+    doc.setFontSize(20);
+    doc.setFont('helvetica', 'bold');
+    doc.text('CUSTOM SERVICE HISTORY REPORT', 105, 20, { align: 'center' });
+    
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Generated on: ${timestamp}`, 105, 28, { align: 'center' });
+    doc.text(`Filters: Customer: ${selectedCustomerId === 'all' ? 'All' : customers.find(c => c.id === selectedCustomerId)?.name}, ` +
+             `Technician: ${selectedMechanicId === 'all' ? 'All' : mechanics.find(m => m.uid === selectedMechanicId)?.name}, ` +
+             `Range: ${startDate || 'Start'} to ${endDate || 'End'}`, 105, 34, { align: 'center' });
+    
+    let currentY = 45;
+
+    reportResults.forEach((res) => {
+      if (currentY > 250) {
+        doc.addPage();
+        currentY = 20;
+      }
+
+      doc.setFillColor(240, 240, 240);
+      doc.rect(20, currentY, 170, 8, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.text(`TICKET: ${res.ticket.description.toUpperCase()} (${res.ticket.status})`, 25, currentY + 5);
+      currentY += 12;
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.text(`Customer: ${res.customer.name}`, 25, currentY);
+      doc.text(`Machinery: ${res.machinery.model} (${res.machinery.serialNumber})`, 100, currentY);
+      currentY += 6;
+      doc.text(`Opened: ${new Date(res.ticket.openedAt).toLocaleDateString()}`, 25, currentY);
+      if (res.ticket.closedAt) {
+        doc.text(`Closed: ${new Date(res.ticket.closedAt).toLocaleDateString()}`, 100, currentY);
+      }
+      currentY += 10;
+
+      // Logs for this ticket
+      if (res.logs.length > 0) {
+        autoTable(doc, {
+          startY: currentY,
+          head: [['Date', 'Technician', 'Work Done', 'Parts']],
+          body: res.logs.map(log => [
+            new Date(log.timestamp).toLocaleDateString(),
+            log.mechanicName,
+            log.workDone,
+            [
+              log.partsReplaced,
+              ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
+            ].filter(Boolean).join(', ')
+          ]),
+          margin: { left: 25 },
+          styles: { fontSize: 8 },
+          theme: 'grid'
+        });
+        currentY = (doc as any).lastAutoTable.finalY + 15;
+      } else {
+        doc.text('No service logs recorded for this ticket.', 25, currentY);
+        currentY += 10;
+      }
+    });
+
+    doc.save(`Service_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+    addToast("Report downloaded successfully", "success");
+  };
+
+  if (loading) return <div className="flex justify-center p-12"><LoadingSpinner /></div>;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+      <div className="bg-white border border-[#141414] p-6 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+        <h2 className="text-xl font-bold tracking-tighter uppercase italic mb-6 border-b border-[#141414] pb-2">Report Configuration</h2>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div>
+            <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Customer</label>
+            <select 
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+              value={selectedCustomerId}
+              onChange={(e) => setSelectedCustomerId(e.target.value)}
+            >
+              <option value="all">ALL CUSTOMERS</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          
+          <div>
+            <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Technician</label>
+            <select 
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+              value={selectedMechanicId}
+              onChange={(e) => setSelectedMechanicId(e.target.value)}
+            >
+              <option value="all">ALL TECHNICIANS</option>
+              {mechanics.map(m => <option key={m.uid} value={m.uid}>{m.name}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Start Date</label>
+            <input 
+              type="date"
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">End Date</label>
+            <input 
+              type="date"
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="mt-8 flex gap-4">
+          <button 
+            onClick={handleGenerateReport}
+            disabled={generating}
+            className="flex-1 py-3 bg-[#141414] text-white text-xs font-bold uppercase tracking-widest hover:bg-gray-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            <RotateCw size={16} className={generating ? 'animate-spin' : ''} />
+            {generating ? 'GENERATING...' : 'GENERATE REPORT'}
+          </button>
+          
+          {reportResults.length > 0 && (
+            <button 
+              onClick={downloadPDF}
+              className="px-8 py-3 border-2 border-[#141414] text-[#141414] text-xs font-bold uppercase tracking-widest hover:bg-gray-50 transition-all flex items-center gap-2"
+            >
+              <Download size={16} /> DOWNLOAD PDF
+            </button>
+          )}
+        </div>
+      </div>
+
+      {reportResults.length > 0 && (
+        <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
+          <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
+            <h2 className="text-xs font-bold tracking-widest uppercase italic">Report Preview ({reportResults.length} Tickets)</h2>
+            <BarChart3 size={16} className="text-gray-400" />
+          </div>
+          <div className="p-6 space-y-8">
+            {reportResults.map((res) => (
+              <div key={res.ticket.id} className="border border-gray-100 p-4 hover:border-[#141414] transition-all">
+                <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <h4 className="text-sm font-bold uppercase">{res.ticket.description}</h4>
+                    <p className="text-[10px] font-mono text-gray-400 uppercase">{res.customer.name} | {res.machinery.model}</p>
+                  </div>
+                  <span className={`px-2 py-0.5 text-[8px] font-bold uppercase border ${
+                    res.ticket.status === 'Completed' ? 'bg-green-50 text-green-700 border-green-200' : 
+                    res.ticket.status === 'In Progress' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-gray-50 text-gray-700 border-gray-200'
+                  }`}>
+                    {res.ticket.status}
+                  </span>
+                </div>
+                
+                <div className="space-y-2">
+                  {res.logs.map(log => (
+                    <div key={log.id} className="text-[10px] border-l-2 border-gray-100 pl-3 py-1">
+                      <div className="flex gap-4">
+                        <span className="text-gray-400 font-mono shrink-0">{new Date(log.timestamp).toLocaleDateString()}</span>
+                        <span className="font-bold shrink-0 w-24 truncate">{log.mechanicName}</span>
+                        <span className="text-gray-600 italic">{log.workDone}</span>
+                      </div>
+                      {(log.partsReplaced || (log.usedParts && log.usedParts.length > 0)) && (
+                        <div className="mt-1 text-[9px] text-gray-400 flex items-center gap-1">
+                          <Box size={10} />
+                          <span>
+                            {[
+                              log.partsReplaced,
+                              ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
+                            ].filter(Boolean).join(', ')}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
   return (
     <button 
@@ -724,29 +1279,94 @@ function Dashboard() {
 
   useEffect(() => {
     if (!profile) return;
-    // Fetch machinery due for service
-    const qDue = query(collection(db, 'machinery'), where('status', '==', 'Due for Service'));
-    const unsubDue = onSnapshot(qDue, (snap) => {
-      setDueMachinery(snap.docs.map(d => ({ id: d.id, ...d.data() } as Machinery)));
-      setStats(prev => ({ ...prev, due: snap.size }));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'machinery'));
+    
+    const fetchDashboardData = async () => {
+      // Fetch machinery due for service
+      const { data: dueData, error: dueError } = await supabase
+        .from('machinery')
+        .select('*')
+        .eq('status', 'Due for Service');
+      
+      if (dueError) {
+        handleSupabaseError(dueError, OperationType.LIST, 'machinery');
+      } else {
+        const mappedDue = (dueData as any[]).map(m => ({
+          ...m,
+          customerId: m.customer_id,
+          serialNumber: m.serial_number,
+          purchaseDate: m.purchase_date,
+          warrantyExpiry: m.warranty_expiry,
+          lastServiceDate: m.last_service_date,
+          nextServiceDueDate: m.next_service_due_date
+        })) as Machinery[];
+        setDueMachinery(mappedDue);
+        setStats(prev => ({ ...prev, due: dueData.length }));
+      }
 
-    // Fetch active tickets
-    const qTickets = query(collection(db, 'serviceTickets'), where('status', 'in', ['Open', 'In Progress']));
-    const unsubTickets = onSnapshot(qTickets, (snap) => {
-      setActiveTickets(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceTicket)));
-      setStats(prev => ({ ...prev, active: snap.size }));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'serviceTickets'));
+      // Fetch active tickets
+      const { data: ticketData, error: ticketError } = await supabase
+        .from('service_tickets')
+        .select('*')
+        .in('status', ['Open', 'In Progress']);
+      
+      if (ticketError) {
+        handleSupabaseError(ticketError, OperationType.LIST, 'service_tickets');
+      } else {
+        const mappedTickets = (ticketData as any[]).map(t => ({
+          ...t,
+          machineryId: t.machinery_id,
+          customerId: t.customer_id,
+          mechanicId: t.mechanic_id,
+          openedAt: t.opened_at,
+          closedAt: t.closed_at,
+          satisfactionScore: t.satisfaction_score
+        })) as ServiceTicket[];
+        setActiveTickets(mappedTickets);
+        setStats(prev => ({ ...prev, active: ticketData.length }));
+      }
 
-    const qParts = query(collection(db, 'parts'));
-    const unsubParts = onSnapshot(qParts, (snap) => {
-      const parts = snap.docs.map(d => ({ id: d.id, ...d.data() } as Part));
-      const lowStock = parts.filter(p => p.quantity <= p.minQuantity);
-      setLowStockParts(lowStock);
-      setStats(prev => ({ ...prev, lowStock: lowStock.length }));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'parts'));
+      // Fetch low stock parts
+      const { data: partData, error: partError } = await supabase
+        .from('parts')
+        .select('*');
+      
+      if (partError) {
+        handleSupabaseError(partError, OperationType.LIST, 'parts');
+      } else {
+        const mappedParts = (partData as any[]).map(p => ({
+          ...p,
+          minQuantity: p.min_quantity,
+          unitPrice: p.unit_price,
+          updatedAt: p.updated_at
+        })) as Part[];
+        const lowStock = mappedParts.filter(p => p.quantity <= (p.minQuantity || 0));
+        setLowStockParts(lowStock);
+        setStats(prev => ({ ...prev, lowStock: lowStock.length }));
+      }
+    };
 
-    return () => { unsubDue(); unsubTickets(); unsubParts(); };
+    fetchDashboardData();
+
+    const dueSub = supabase
+      .channel('machinery_due_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'machinery', filter: 'status=eq.Due for Service' }, () => fetchDashboardData())
+      .subscribe();
+
+    const ticketSub = supabase
+      .channel('service_tickets_active_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_tickets' }, () => fetchDashboardData())
+      .subscribe();
+
+    const partSub = supabase
+      .channel('parts_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts' }, () => fetchDashboardData())
+      .subscribe();
+
+    return () => {
+      dueSub.unsubscribe();
+      ticketSub.unsubscribe();
+      partSub.unsubscribe();
+    };
   }, []);
 
   return (
@@ -825,6 +1445,9 @@ function Dashboard() {
           </div>
         </div>
 
+        {/* AI Predictive Maintenance */}
+        <PredictiveMaintenance />
+
         {/* Low Stock Alerts */}
         <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] lg:col-span-2">
           <div className="p-4 border-b border-[#141414] flex justify-between items-center bg-amber-50">
@@ -867,6 +1490,218 @@ function StatCard({ label, value, icon, color }: { label: string, value: number,
   );
 }
 
+interface Prediction {
+  machineryId: string;
+  model: string;
+  prediction: string;
+  confidenceScore: number;
+  recommendedActions: string[];
+  estimatedServiceDate: string;
+}
+
+function PredictiveMaintenance() {
+  const { profile } = useAuth();
+  const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const generatePredictions = async () => {
+    if (!profile) return;
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Fetch all machinery and their recent history
+      const { data: machinery, error: mError } = await supabase
+        .from('machinery')
+        .select('*');
+      
+      if (mError) throw mError;
+
+      const mappedMachinery = (machinery as any[]).map(m => ({
+        ...m,
+        customerId: m.customer_id,
+        serialNumber: m.serial_number,
+        purchaseDate: m.purchase_date,
+        warrantyExpiry: m.warranty_expiry,
+        lastServiceDate: m.last_service_date,
+        nextServiceDueDate: m.next_service_due_date
+      })) as Machinery[];
+
+      const { data: tickets, error: tError } = await supabase
+        .from('service_tickets')
+        .select('*')
+        .order('opened_at', { ascending: false })
+        .limit(50);
+      
+      if (tError) throw tError;
+
+      const mappedTickets = (tickets as any[]).map(t => ({
+        ...t,
+        machineryId: t.machinery_id,
+        customerId: t.customer_id,
+        mechanicId: t.mechanic_id,
+        openedAt: t.opened_at,
+        closedAt: t.closed_at,
+        satisfactionScore: t.satisfaction_score
+      })) as ServiceTicket[];
+
+      const dataForAI = mappedMachinery.map(m => {
+        const mTickets = mappedTickets.filter(t => t.machineryId === m.id);
+        return {
+          id: m.id,
+          model: m.model,
+          type: m.type,
+          status: m.status,
+          warrantyExpiry: m.warrantyExpiry,
+          lastServiceDate: m.lastServiceDate,
+          nextServiceDueDate: m.nextServiceDueDate,
+          recentTickets: mTickets.map(t => ({
+            description: t.description,
+            status: t.status,
+            openedAt: t.openedAt,
+            closedAt: t.closedAt
+          }))
+        };
+      });
+
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Analyze the following machinery data and predict which units are likely to require service within the next month. 
+        Consider the last service date, warranty expiry, and recent service history.
+        
+        Machinery Data:
+        ${JSON.stringify(dataForAI, null, 2)}
+        
+        Current Date: ${new Date().toISOString()}
+        
+        Provide predictions for the top 3-5 most critical units.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                machineryId: { type: Type.STRING },
+                model: { type: Type.STRING },
+                prediction: { type: Type.STRING },
+                confidenceScore: { type: Type.NUMBER },
+                recommendedActions: { 
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING }
+                },
+                estimatedServiceDate: { type: Type.STRING }
+              },
+              required: ["machineryId", "model", "prediction", "confidenceScore", "recommendedActions", "estimatedServiceDate"]
+            }
+          }
+        }
+      });
+
+      const result = JSON.parse(response.text || "[]");
+      setPredictions(result);
+    } catch (err) {
+      console.error("AI Prediction error:", err);
+      setError("Failed to generate AI predictions. Please try again later.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    generatePredictions();
+  }, [profile]);
+
+  return (
+    <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] lg:col-span-2">
+      <div className="p-4 border-b border-[#141414] flex justify-between items-center bg-[#141414] text-white">
+        <div className="flex items-center gap-2">
+          <BrainCircuit size={18} className="text-blue-400" />
+          <h3 className="font-bold text-xs tracking-widest uppercase italic">AI Predictive Maintenance</h3>
+        </div>
+        <button 
+          onClick={generatePredictions}
+          disabled={loading}
+          className="p-1 hover:bg-gray-800 transition-colors disabled:opacity-50"
+          title="Refresh Predictions"
+        >
+          <RotateCw size={14} className={loading ? 'animate-spin' : ''} />
+        </button>
+      </div>
+      
+      <div className="p-6">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-12 space-y-4">
+            <div className="relative">
+              <Sparkles size={32} className="text-blue-500 animate-pulse" />
+              <BrainCircuit size={24} className="absolute -bottom-2 -right-2 text-gray-400 animate-bounce" />
+            </div>
+            <p className="text-[10px] font-mono text-gray-400 uppercase tracking-widest animate-pulse">Analyzing historical data & current status...</p>
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <AlertCircle size={32} className="text-red-500 mb-4" />
+            <p className="text-xs font-bold text-red-600 uppercase mb-2">{error}</p>
+            <button 
+              onClick={generatePredictions}
+              className="text-[10px] font-bold underline uppercase tracking-widest hover:text-red-800"
+            >
+              Try Again
+            </button>
+          </div>
+        ) : predictions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <CheckCircle2 size={32} className="text-green-500 mb-4" />
+            <p className="text-xs font-bold text-gray-400 uppercase italic">All machinery appears to be in optimal condition for the next 30 days.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {predictions.map((p, idx) => (
+              <div key={idx} className="border border-[#141414] p-4 bg-gray-50 relative overflow-hidden group">
+                <div className="absolute top-0 right-0 p-2">
+                  <div className="flex items-center gap-1 bg-white border border-[#141414] px-2 py-1">
+                    <Gauge size={12} className={p.confidenceScore > 80 ? 'text-red-600' : 'text-amber-600'} />
+                    <span className="text-[10px] font-bold font-mono">{p.confidenceScore}%</span>
+                  </div>
+                </div>
+                
+                <div className="mb-4">
+                  <h4 className="text-sm font-bold uppercase mb-1">{p.model}</h4>
+                  <p className="text-[10px] font-mono text-gray-400 uppercase">Est. Service: {new Date(p.estimatedServiceDate).toLocaleDateString()}</p>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="bg-white p-3 border border-[#141414] border-dashed">
+                    <p className="text-[11px] leading-relaxed italic text-gray-600">"{p.prediction}"</p>
+                  </div>
+
+                  <div>
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 mb-2">Recommended Actions:</p>
+                    <ul className="space-y-1">
+                      {p.recommendedActions.map((action, i) => (
+                        <li key={i} className="flex items-start gap-2 text-[10px]">
+                          <div className="mt-1 w-1 h-1 bg-[#141414] rounded-full shrink-0" />
+                          <span>{action}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="p-3 bg-gray-50 border-t border-[#141414] flex items-center gap-2">
+        <Sparkles size={12} className="text-blue-500" />
+        <p className="text-[8px] font-mono text-gray-400 uppercase">AI-generated predictions based on historical service patterns and current operational status.</p>
+      </div>
+    </div>
+  );
+}
+
 function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?: string | null, onCloseModal?: () => void }) {
   const { profile, canEditCustomers } = useAuth();
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -885,11 +1720,37 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'customers'), orderBy('name'));
-    const unsub = onSnapshot(q, (snap) => {
-      setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'customers'));
-    return unsub;
+    
+    const fetchCustomers = async () => {
+      const { data, error } = await supabase
+        .from('customers')
+        .select('*')
+        .order('name');
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'customers');
+      } else {
+        const mappedCustomers = (data as any[]).map(c => ({
+          ...c,
+          invoiceDate: c.invoice_date,
+          invoiceNumber: c.invoice_number,
+          invoiceAmount: c.invoice_amount,
+          createdAt: c.created_at
+        })) as Customer[];
+        setCustomers(mappedCustomers);
+      }
+    };
+
+    fetchCustomers();
+
+    const subscription = supabase
+      .channel('customers_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => fetchCustomers())
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const filtered = customers.filter(c => 
@@ -1026,28 +1887,50 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
     setLoading(true);
     try {
       // 1. Create Customer
-      const customerDocRef = await addDoc(collection(db, 'customers'), {
-        ...formData,
-        invoiceAmount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0,
-        createdAt: new Date().toISOString()
-      });
+      const { data: customerData, error: customerError } = await supabase
+        .from('customers')
+        .insert({
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          address: formData.address,
+          invoice_date: formData.invoiceDate || null,
+          invoice_number: formData.invoiceNumber || null,
+          invoice_amount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0,
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (customerError) throw customerError;
 
       if (profile) {
-        await logAudit(profile.uid, profile.name, 'CREATE', 'Customer', customerDocRef.id, `Created customer: ${formData.name}`);
+        await logAudit(profile.uid, profile.name, 'CREATE', 'Customer', customerData.id, `Created customer: ${formData.name}`);
       }
 
       // 2. Create Machinery items
       for (const m of machineryList) {
         // Only create if model and serial are provided
         if (m.model && m.serialNumber) {
-          const machineryDocRef = await addDoc(collection(db, 'machinery'), {
-            ...m,
-            customerId: customerDocRef.id,
-            purchaseDate: m.purchaseDate || formData.invoiceDate
-          });
+          const { data: machineryData, error: machineryError } = await supabase
+            .from('machinery')
+            .insert({
+              customer_id: customerData.id,
+              type: m.type,
+              model: m.model,
+              serial_number: m.serialNumber,
+              purchase_date: m.purchaseDate || formData.invoiceDate || null,
+              warranty_expiry: m.warrantyExpiry || null,
+              next_service_due_date: m.nextServiceDueDate || null,
+              status: m.status
+            })
+            .select()
+            .single();
+
+          if (machineryError) throw machineryError;
 
           if (profile) {
-            await logAudit(profile.uid, profile.name, 'CREATE', 'Machinery', machineryDocRef.id, `Created machinery: ${m.model} for new customer ${formData.name}`);
+            await logAudit(profile.uid, profile.name, 'CREATE', 'Machinery', machineryData.id, `Created machinery: ${m.model} for new customer ${formData.name}`);
           }
         }
       }
@@ -1056,7 +1939,7 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
       onClose();
     } catch (err) {
       addToast("Failed to register customer", "error");
-      handleFirestoreError(err, OperationType.CREATE, 'customers');
+      handleSupabaseError(err, OperationType.CREATE, 'customers');
     } finally {
       setLoading(false);
     }
@@ -1322,21 +2205,59 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const q = query(collection(db, 'machinery'), where('customerId', '==', customer.id));
-    const unsub = onSnapshot(q, (snap) => {
-      setMachinery(snap.docs.map(d => ({ id: d.id, ...d.data() } as Machinery)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'machinery'));
-    return unsub;
+    const fetchMachinery = async () => {
+      const { data, error } = await supabase
+        .from('machinery')
+        .select('*')
+        .eq('customer_id', customer.id);
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'machinery');
+      } else {
+        const mappedMachinery = (data as any[]).map(m => ({
+          ...m,
+          customerId: m.customer_id,
+          serialNumber: m.serial_number,
+          purchaseDate: m.purchase_date,
+          warrantyExpiry: m.warranty_expiry,
+          lastServiceDate: m.last_service_date,
+          nextServiceDueDate: m.next_service_due_date
+        })) as Machinery[];
+        setMachinery(mappedMachinery);
+      }
+    };
+
+    fetchMachinery();
+
+    const subscription = supabase
+      .channel(`machinery_customer_${customer.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'machinery', filter: `customer_id=eq.${customer.id}` }, () => fetchMachinery())
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, [customer.id]);
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      await updateDoc(doc(db, 'customers', customer.id), {
-        ...formData,
-        invoiceAmount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0
-      });
+      const { error } = await supabase
+        .from('customers')
+        .update({
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          address: formData.address,
+          invoice_date: formData.invoiceDate,
+          invoice_number: formData.invoiceNumber,
+          invoice_amount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0
+        })
+        .eq('id', customer.id);
+      
+      if (error) throw error;
+
       if (profile) {
         await logAudit(profile.uid, profile.name, 'UPDATE', 'Customer', customer.id, `Updated customer details: ${customer.name}`);
       }
@@ -1344,7 +2265,7 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
       setIsEditing(false);
     } catch (err) {
       addToast("Failed to update customer", "error");
-      handleFirestoreError(err, OperationType.UPDATE, `customers/${customer.id}`);
+      handleSupabaseError(err, OperationType.UPDATE, `customers/${customer.id}`);
     } finally {
       setLoading(false);
     }
@@ -1614,7 +2535,12 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
             onClose={() => setDeletingMachine(null)} 
             onConfirm={async () => {
               try {
-                await deleteDoc(doc(db, 'machinery', deletingMachine.id));
+                const { error } = await supabase
+                  .from('machinery')
+                  .delete()
+                  .eq('id', deletingMachine.id);
+                
+                if (error) throw error;
                 if (profile) {
                   await logAudit(profile.uid, profile.name, 'DELETE', 'Machinery', deletingMachine.id, `Deleted machinery: ${deletingMachine.model} (${deletingMachine.serialNumber})`);
                 }
@@ -1622,7 +2548,7 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
                 setDeletingMachine(null);
               } catch (err) {
                 addToast("Failed to delete machinery", "error");
-                handleFirestoreError(err, OperationType.DELETE, `machinery/${deletingMachine.id}`);
+                handleSupabaseError(err, OperationType.DELETE, `machinery/${deletingMachine.id}`);
               }
             }} 
           />
@@ -1643,6 +2569,7 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
   const [filter, setFilter] = useState<MachineryStatus | 'ALL'>('ALL');
   const [typeFilter, setTypeFilter] = useState<MachineryType | 'ALL'>('ALL');
   const [search, setSearch] = useState('');
+  const [showExpiringOnly, setShowExpiringOnly] = useState(false);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | 'none'>('none');
   const [loadingReport, setLoadingReport] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -1650,47 +2577,120 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'machinery'));
-    const unsub = onSnapshot(q, (snap) => {
-      setMachinery(snap.docs.map(d => ({ id: d.id, ...d.data() } as Machinery)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'machinery'));
+    
+    const fetchData = async () => {
+      // Fetch machinery
+      const { data: machData, error: machError } = await supabase
+        .from('machinery')
+        .select('*');
+      
+      if (machError) {
+        handleSupabaseError(machError, OperationType.LIST, 'machinery');
+      } else {
+        // Map snake_case to camelCase if necessary, or assume schema matches interface
+        // For now, let's assume we use the interface names in DB or map them
+        setMachinery(machData.map(m => ({
+          ...m,
+          customerId: m.customer_id || m.customerId,
+          serialNumber: m.serial_number || m.serialNumber,
+          purchaseDate: m.purchase_date || m.purchaseDate,
+          warrantyExpiry: m.warranty_expiry || m.warrantyExpiry,
+          lastServiceDate: m.last_service_date || m.lastServiceDate,
+          nextServiceDueDate: m.next_service_due_date || m.nextServiceDueDate
+        })) as Machinery[]);
+      }
 
-    const unsubCust = onSnapshot(collection(db, 'customers'), (snap) => {
-      const map: Record<string, string> = {};
-      snap.docs.forEach(d => map[d.id] = d.data().name);
-      setCustomers(map);
-    });
+      // Fetch customers for the map
+      const { data: custData, error: custError } = await supabase
+        .from('customers')
+        .select('id, name');
+      
+      if (custError) {
+        handleSupabaseError(custError, OperationType.LIST, 'customers');
+      } else {
+        const map: Record<string, string> = {};
+        custData.forEach(d => map[d.id] = d.name);
+        setCustomers(map);
+      }
+    };
 
-    return () => { unsub(); unsubCust(); };
+    fetchData();
+
+    const machSub = supabase
+      .channel('machinery_all_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'machinery' }, () => fetchData())
+      .subscribe();
+
+    const custSub = supabase
+      .channel('customers_all_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => fetchData())
+      .subscribe();
+
+    return () => {
+      machSub.unsubscribe();
+      custSub.unsubscribe();
+    };
   }, [profile]);
 
   const handleDownloadReport = async (m: Machinery) => {
     setLoadingReport(m.id);
     try {
       // 1. Get Customer
-      const customerDoc = await getDoc(doc(db, 'customers', m.customerId));
-      if (!customerDoc.exists()) throw new Error("Customer not found");
-      const customer = { id: customerDoc.id, ...customerDoc.data() } as Customer;
+      const { data: customer, error: custError } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('id', m.customerId)
+        .single();
+      
+      if (custError) throw custError;
 
       // 2. Get all Tickets for this machine
-      const q = query(collection(db, 'serviceTickets'), where('machineryId', '==', m.id), orderBy('openedAt', 'desc'));
-      const ticketsSnap = await getDocs(q);
-      const tickets = ticketsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceTicket));
+      const { data: tickets, error: ticketsError } = await supabase
+        .from('service_tickets')
+        .select('*')
+        .eq('machinery_id', m.id)
+        .order('opened_at', { ascending: false });
+      
+      if (ticketsError) throw ticketsError;
+
+      const mappedTickets = (tickets as any[]).map(t => ({
+        ...t,
+        machineryId: t.machinery_id,
+        customerId: t.customer_id,
+        mechanicId: t.mechanic_id,
+        openedAt: t.opened_at,
+        closedAt: t.closed_at,
+        satisfactionScore: t.satisfaction_score
+      })) as ServiceTicket[];
 
       // 3. Get logs for all tickets
       const allLogs: Record<string, ServiceLog[]> = {};
-      for (const t of tickets) {
-        const logsSnap = await getDocs(query(collection(db, 'serviceTickets', t.id, 'logs'), orderBy('timestamp', 'asc')));
-        allLogs[t.id] = logsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceLog));
+      for (const t of mappedTickets) {
+        const { data: logs, error: logsError } = await supabase
+          .from('service_logs')
+          .select('*')
+          .eq('ticket_id', t.id)
+          .order('timestamp', { ascending: true });
+        
+        if (logsError) throw logsError;
+        
+        allLogs[t.id] = (logs as any[]).map(l => ({
+          ...l,
+          ticketId: l.ticket_id,
+          mechanicId: l.mechanic_id,
+          mechanicName: l.mechanic_name,
+          partsReplaced: l.parts_replaced,
+          usedParts: l.used_parts
+        })) as ServiceLog[];
       }
 
-      generateMachineryFullReport(m, customer, tickets, allLogs);
+      generateMachineryFullReport(m, customer as Customer, mappedTickets, allLogs);
       
       if (profile) {
         await logAudit(profile.uid, profile.name, 'DOWNLOAD', 'MachineryReport', m.id, `Generated full report for ${m.model} (${m.serialNumber})`);
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, 'machinery_report');
+      handleSupabaseError(err, OperationType.LIST, 'machinery_report');
     } finally {
       setLoadingReport(null);
     }
@@ -1699,13 +2699,22 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
   const filtered = machinery.filter(m => {
     const matchesStatus = filter === 'ALL' || m.status === filter;
     const matchesType = typeFilter === 'ALL' || m.type === typeFilter;
+    
+    const today = new Date();
+    const expiry = new Date(m.warrantyExpiry);
+    const diffTime = expiry.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const isExpiringSoon = diffDays <= 30 && diffDays >= 0;
+
+    const matchesExpiring = !showExpiringOnly || isExpiringSoon;
+    
     const customerName = customers[m.customerId] || '';
     const matchesSearch = 
       m.model.toLowerCase().includes(search.toLowerCase()) ||
       m.serialNumber.toLowerCase().includes(search.toLowerCase()) ||
       m.type.toLowerCase().includes(search.toLowerCase()) ||
       customerName.toLowerCase().includes(search.toLowerCase());
-    return matchesStatus && matchesType && matchesSearch;
+    return matchesStatus && matchesType && matchesSearch && matchesExpiring;
   }).sort((a, b) => {
     if (sortOrder === 'none') return 0;
     const dateA = new Date(a.warrantyExpiry).getTime();
@@ -1717,22 +2726,25 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
     if (selectedIds.size === 0 || !profile) return;
     setIsBulkUpdating(true);
     try {
-      const batch = writeBatch(db);
       const selectedMachinery = machinery.filter(m => selectedIds.has(m.id));
       
       for (const m of selectedMachinery) {
-        const ref = doc(db, 'machinery', m.id);
-        batch.update(ref, { status });
+        const { error } = await supabase
+          .from('machinery')
+          .update({ status })
+          .eq('id', m.id);
+        
+        if (error) throw error;
+        
         await logAudit(profile.uid, profile.name, 'UPDATE', 'Machinery', m.id, `Bulk status update to ${status}`);
       }
       
-      await batch.commit();
       const count = selectedIds.size;
       setSelectedIds(new Set());
       addToast(`Successfully updated ${count} machines to ${status}`, "success");
     } catch (err) {
       addToast("Bulk update failed", "error");
-      handleFirestoreError(err, OperationType.UPDATE, 'machinery_bulk');
+      handleSupabaseError(err, OperationType.UPDATE, 'machinery_bulk');
     } finally {
       setIsBulkUpdating(false);
     }
@@ -1766,7 +2778,13 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
 
   const handleDeleteMachinery = async (m: Machinery) => {
     try {
-      await deleteDoc(doc(db, 'machinery', m.id));
+      const { error } = await supabase
+        .from('machinery')
+        .delete()
+        .eq('id', m.id);
+      
+      if (error) throw error;
+
       if (profile) {
         await logAudit(profile.uid, profile.name, 'DELETE', 'Machinery', m.id, `Deleted machinery: ${m.model} (${m.serialNumber})`);
       }
@@ -1774,7 +2792,7 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
       setDeletingMachine(null);
     } catch (err) {
       addToast("Failed to delete machinery", "error");
-      handleFirestoreError(err, OperationType.DELETE, `machinery/${m.id}`);
+      handleSupabaseError(err, OperationType.DELETE, `machinery/${m.id}`);
     }
   };
 
@@ -1845,14 +2863,20 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
               />
             </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <div className="flex gap-2 border-r border-[#141414] pr-2">
-              <FilterButton active={filter === 'ALL'} onClick={() => setFilter('ALL')} label="ALL" status="ALL" />
-              <FilterButton active={filter === 'Operational'} onClick={() => setFilter('Operational')} label="OPERATIONAL" status="Operational" />
-              <FilterButton active={filter === 'Due for Service'} onClick={() => setFilter('Due for Service')} label="DUE" status="Due for Service" />
-              <FilterButton active={filter === 'Under Repair'} onClick={() => setFilter('Under Repair')} label="REPAIR" status="Under Repair" />
-            </div>
-            <select 
+            <div className="flex flex-wrap gap-2">
+              <div className="flex gap-2 border-r border-[#141414] pr-2">
+                <FilterButton active={filter === 'ALL'} onClick={() => setFilter('ALL')} label="ALL" status="ALL" />
+                <FilterButton active={filter === 'Operational'} onClick={() => setFilter('Operational')} label="OPERATIONAL" status="Operational" />
+                <FilterButton active={filter === 'Due for Service'} onClick={() => setFilter('Due for Service')} label="DUE" status="Due for Service" />
+                <FilterButton active={filter === 'Under Repair'} onClick={() => setFilter('Under Repair')} label="REPAIR" status="Under Repair" />
+              </div>
+              <FilterButton 
+                active={showExpiringOnly} 
+                onClick={() => setShowExpiringOnly(!showExpiringOnly)} 
+                label="EXPIRING" 
+                status="EXPIRING" 
+              />
+              <select 
               className="px-3 py-1.5 text-[10px] font-bold tracking-widest border border-[#141414] bg-white focus:outline-none uppercase"
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value as any)}
@@ -1891,14 +2915,26 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        {filtered.map(m => (
-          <div 
-            key={m.id} 
-            className={`bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] p-6 group hover:-translate-y-1 transition-all relative ${
-              selectedIds.has(m.id) ? 'ring-2 ring-[#141414] bg-gray-50' : ''
-            }`}
-          >
-            <div className="absolute top-4 right-4 z-10">
+        {filtered.map(m => {
+          const today = new Date();
+          const expiry = new Date(m.warrantyExpiry);
+          const diffTime = expiry.getTime() - today.getTime();
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          const isExpiringSoon = diffDays <= 30 && diffDays >= 0;
+
+          return (
+            <div 
+              key={m.id} 
+              className={`bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] p-6 group hover:-translate-y-1 transition-all relative ${
+                selectedIds.has(m.id) ? 'ring-2 ring-[#141414] bg-gray-50' : ''
+              } ${isExpiringSoon ? 'border-l-4 border-l-red-600' : ''}`}
+            >
+              {isExpiringSoon && (
+                <div className="absolute -top-2 -left-2 z-20 bg-red-600 text-white text-[8px] font-bold px-2 py-0.5 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] uppercase tracking-widest">
+                  Warranty Expiring
+                </div>
+              )}
+              <div className="absolute top-4 right-4 z-10">
               <input 
                 type="checkbox" 
                 className="w-4 h-4 accent-[#141414] cursor-pointer"
@@ -1980,8 +3016,9 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
               </button>
             </div>
           </div>
-        ))}
-      </div>
+        );
+      })}
+    </div>
 
       {isAdding && <AddMachineryModal onClose={() => setIsAdding(false)} />}
       {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} />}
@@ -1996,12 +3033,13 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
   );
 }
 
-function FilterButton({ active, onClick, label, status }: { active: boolean, onClick: () => void, label: string, status?: MachineryStatus | 'ALL' }) {
+function FilterButton({ active, onClick, label, status }: { active: boolean, onClick: () => void, label: string, status?: MachineryStatus | 'ALL' | 'EXPIRING' }) {
   const getColors = () => {
     if (!active) return 'bg-white text-gray-500 hover:bg-gray-50 border-[#141414]';
     if (status === 'Operational') return 'bg-green-600 text-white border-green-700';
     if (status === 'Due for Service') return 'bg-red-600 text-white border-red-700';
     if (status === 'Under Repair') return 'bg-amber-600 text-white border-amber-700';
+    if (status === 'EXPIRING') return 'bg-red-600 text-white border-red-700 animate-pulse';
     return 'bg-[#141414] text-white border-[#141414]';
   };
 
@@ -2023,17 +3061,48 @@ function EditMachineryModal({ machine, onClose }: { machine: Machinery, onClose:
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    getDocs(collection(db, 'customers')).then(snap => {
-      setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer)));
-    });
+    const fetchCustomers = async () => {
+      const { data, error } = await supabase
+        .from('customers')
+        .select('*')
+        .order('name');
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'customers');
+      } else {
+        const mappedCustomers = (data as any[]).map(c => ({
+          ...c,
+          invoiceDate: c.invoice_date,
+          invoiceNumber: c.invoice_number,
+          invoiceAmount: c.invoice_amount,
+          createdAt: c.created_at
+        })) as Customer[];
+        setCustomers(mappedCustomers);
+      }
+    };
+    fetchCustomers();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const { id, ...data } = formData;
-      await updateDoc(doc(db, 'machinery', machine.id), data);
+      const { error } = await supabase
+        .from('machinery')
+        .update({
+          customer_id: formData.customerId,
+          type: formData.type,
+          model: formData.model,
+          serial_number: formData.serialNumber,
+          purchase_date: formData.purchaseDate || null,
+          warranty_expiry: formData.warrantyExpiry || null,
+          last_service_date: formData.lastServiceDate || null,
+          next_service_due_date: formData.nextServiceDueDate || null,
+          status: formData.status
+        })
+        .eq('id', machine.id);
+      
+      if (error) throw error;
       
       if (profile) {
         const changes = [];
@@ -2056,7 +3125,7 @@ function EditMachineryModal({ machine, onClose }: { machine: Machinery, onClose:
       onClose();
     } catch (err) {
       addToast("Failed to update machinery", "error");
-      handleFirestoreError(err, OperationType.UPDATE, `machinery/${machine.id}`);
+      handleSupabaseError(err, OperationType.UPDATE, `machinery/${machine.id}`);
     } finally {
       setLoading(false);
     }
@@ -2239,24 +3308,57 @@ function AddMachineryModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    getDocs(collection(db, 'customers')).then(snap => {
-      setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer)));
-    });
+    const fetchCustomers = async () => {
+      const { data, error } = await supabase
+        .from('customers')
+        .select('*')
+        .order('name');
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'customers');
+      } else {
+        const mappedCustomers = (data as any[]).map(c => ({
+          ...c,
+          invoiceDate: c.invoice_date,
+          invoiceNumber: c.invoice_number,
+          invoiceAmount: c.invoice_amount,
+          createdAt: c.created_at
+        })) as Customer[];
+        setCustomers(mappedCustomers);
+      }
+    };
+    fetchCustomers();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const docRef = await addDoc(collection(db, 'machinery'), formData);
+      const { data, error } = await supabase
+        .from('machinery')
+        .insert({
+          customer_id: formData.customerId,
+          type: formData.type,
+          model: formData.model,
+          serial_number: formData.serialNumber,
+          purchase_date: formData.purchaseDate || null,
+          warranty_expiry: formData.warrantyExpiry || null,
+          next_service_due_date: formData.nextServiceDueDate || null,
+          status: formData.status
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
       if (profile) {
-        await logAudit(profile.uid, profile.name, 'CREATE', 'Machinery', docRef.id, `Created machinery: ${formData.model} (${formData.serialNumber})`);
+        await logAudit(profile.uid, profile.name, 'CREATE', 'Machinery', data.id, `Created machinery: ${formData.model} (${formData.serialNumber})`);
       }
       addToast(`Machinery ${formData.model} registered successfully`, "success");
       onClose();
     } catch (err) {
       addToast("Failed to register machinery", "error");
-      handleFirestoreError(err, OperationType.CREATE, 'machinery');
+      handleSupabaseError(err, OperationType.CREATE, 'machinery');
     } finally {
       setLoading(false);
     }
@@ -2391,31 +3493,120 @@ function TicketsView() {
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'serviceTickets'), orderBy('openedAt', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      setTickets(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceTicket)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'serviceTickets'));
 
-    const unsubMach = onSnapshot(collection(db, 'machinery'), (snap) => {
-      const map: Record<string, Machinery> = {};
-      snap.docs.forEach(d => map[d.id] = { id: d.id, ...d.data() } as Machinery);
-      setMachinery(map);
-    });
+    const fetchTickets = async () => {
+      const { data, error } = await supabase
+        .from('service_tickets')
+        .select('*')
+        .order('opened_at', { ascending: false });
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'service_tickets');
+      } else {
+        const mappedTickets = (data as any[]).map(t => ({
+          ...t,
+          machineryId: t.machinery_id,
+          customerId: t.customer_id,
+          mechanicId: t.mechanic_id,
+          openedAt: t.opened_at,
+          closedAt: t.closed_at,
+          satisfactionScore: t.satisfaction_score
+        })) as ServiceTicket[];
+        setTickets(mappedTickets);
+      }
+    };
 
-    const unsubCust = onSnapshot(collection(db, 'customers'), (snap) => {
-      const map: Record<string, Customer> = {};
-      snap.docs.forEach(d => map[d.id] = { id: d.id, ...d.data() } as Customer);
-      setCustomers(map);
-    });
+    const fetchMachinery = async () => {
+      const { data, error } = await supabase.from('machinery').select('*');
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'machinery');
+      } else {
+        const map: Record<string, Machinery> = {};
+        data.forEach(d => {
+          map[d.id] = {
+            ...d,
+            customerId: d.customer_id,
+            serialNumber: d.serial_number,
+            purchaseDate: d.purchase_date,
+            warrantyExpiry: d.warranty_expiry,
+            lastServiceDate: d.last_service_date,
+            nextServiceDueDate: d.next_service_due_date
+          } as Machinery;
+        });
+        setMachinery(map);
+      }
+    };
 
-    const unsubMech = onSnapshot(collection(db, 'users'), (snap) => {
-      const map: Record<string, UserProfile> = {};
-      snap.docs.forEach(d => map[d.id] = { uid: d.id, ...d.data() } as UserProfile);
-      setMechanics(map);
-    });
+    const fetchCustomers = async () => {
+      const { data, error } = await supabase.from('customers').select('*');
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'customers');
+      } else {
+        const map: Record<string, Customer> = {};
+        data.forEach(d => {
+          map[d.id] = {
+            ...d,
+            invoiceDate: d.invoice_date,
+            invoiceNumber: d.invoice_number,
+            invoiceAmount: d.invoice_amount,
+            createdAt: d.created_at
+          } as Customer;
+        });
+        setCustomers(map);
+      }
+    };
 
-    return () => { unsub(); unsubMach(); unsubCust(); unsubMech(); };
-  }, []);
+    const fetchMechanics = async () => {
+      const { data, error } = await supabase.from('users').select('*');
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'users');
+      } else {
+        const map: Record<string, UserProfile> = {};
+        data.forEach(d => {
+          map[d.uid] = { 
+            uid: d.uid, 
+            name: d.name,
+            email: d.email,
+            role: d.role,
+            createdAt: d.created_at 
+          } as UserProfile;
+        });
+        setMechanics(map);
+      }
+    };
+
+    fetchTickets();
+    fetchMachinery();
+    fetchCustomers();
+    fetchMechanics();
+
+    const ticketSub = supabase
+      .channel('service_tickets_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_tickets' }, () => fetchTickets())
+      .subscribe();
+
+    const machSub = supabase
+      .channel('machinery_tickets_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'machinery' }, () => fetchMachinery())
+      .subscribe();
+
+    const custSub = supabase
+      .channel('customers_tickets_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => fetchCustomers())
+      .subscribe();
+
+    const mechSub = supabase
+      .channel('users_tickets_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchMechanics())
+      .subscribe();
+
+    return () => {
+      ticketSub.unsubscribe();
+      machSub.unsubscribe();
+      custSub.unsubscribe();
+      mechSub.unsubscribe();
+    };
+  }, [profile]);
 
   const filteredTickets = tickets.filter(t => {
     const machine = machinery[t.machineryId];
@@ -2481,7 +3672,7 @@ function TicketsView() {
                 <div>
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-[10px] font-bold px-2 py-0.5 bg-gray-100 border border-[#141414] uppercase">{t.status}</span>
-                    <span className="text-[10px] font-mono text-gray-400">ID: {t.id.slice(0, 8)}</span>
+                    <span className="text-[10px] font-mono text-gray-400">ID: {t.id?.slice(0, 8)}</span>
                   </div>
                   <h3 className="font-bold text-sm tracking-tight">{machinery[t.machineryId]?.model || 'Unknown Machine'}</h3>
                   <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
@@ -2522,6 +3713,7 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
   const [machinery, setMachinery] = useState<Machinery[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [mechanics, setMechanics] = useState<UserProfile[]>([]);
+  const [activeTickets, setActiveTickets] = useState<ServiceTicket[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
 
@@ -2532,16 +3724,87 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
   }, [profile?.uid, profile?.role]);
 
   useEffect(() => {
-    getDocs(collection(db, 'machinery')).then(snap => {
-      setMachinery(snap.docs.map(d => ({ id: d.id, ...d.data() } as Machinery)));
-    });
-    getDocs(collection(db, 'customers')).then(snap => {
-      setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer)));
-    });
-    getDocs(collection(db, 'users')).then(snap => {
-      setMechanics(snap.docs.map(d => ({ uid: d.id, ...d.data() } as UserProfile)));
-    });
+    const fetchInitialData = async () => {
+      try {
+        const [machRes, custRes, userRes, ticketRes] = await Promise.all([
+          supabase.from('machinery').select('*'),
+          supabase.from('customers').select('*'),
+          supabase.from('users').select('*').in('role', ['Field Technician', 'Administrator', 'Manager']),
+          supabase.from('service_tickets').select('*').in('status', ['Open', 'In Progress'])
+        ]);
+
+        if (machRes.error) throw machRes.error;
+        if (custRes.error) throw custRes.error;
+        if (userRes.error) throw userRes.error;
+        if (ticketRes.error) throw ticketRes.error;
+
+        setMachinery((machRes.data as any[]).map(m => ({
+          ...m,
+          customerId: m.customer_id,
+          serialNumber: m.serial_number,
+          purchaseDate: m.purchase_date,
+          warrantyExpiry: m.warranty_expiry,
+          lastServiceDate: m.last_service_date,
+          nextServiceDueDate: m.next_service_due_date
+        })) as Machinery[]);
+
+        setCustomers((custRes.data as any[]).map(c => ({
+          ...c,
+          invoiceDate: c.invoice_date,
+          invoiceNumber: c.invoice_number,
+          invoiceAmount: c.invoice_amount,
+          createdAt: c.created_at
+        })) as Customer[]);
+
+        setMechanics((userRes.data as any[]).map(u => ({ 
+          uid: u.uid, 
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          createdAt: u.created_at 
+        } as UserProfile)));
+
+        setActiveTickets((ticketRes.data as any[]).map(t => ({
+          ...t,
+          machineryId: t.machinery_id,
+          customerId: t.customer_id,
+          mechanicId: t.mechanic_id,
+          openedAt: t.opened_at,
+          closedAt: t.closed_at,
+          satisfactionScore: t.satisfaction_score
+        })) as ServiceTicket[]);
+      } catch (err) {
+        handleSupabaseError(err, OperationType.LIST, 'add-ticket-modal-init');
+      }
+    };
+
+    fetchInitialData();
   }, []);
+
+  // Calculate workload for each mechanic
+  const mechanicWorkload = useMemo(() => {
+    const workload: Record<string, number> = {};
+    activeTickets.forEach(t => {
+      if (t.mechanicId) {
+        workload[t.mechanicId] = (workload[t.mechanicId] || 0) + 1;
+      }
+    });
+    return workload;
+  }, [activeTickets]);
+
+  // Sort and filter mechanics
+  const sortedMechanics = useMemo(() => {
+    return mechanics
+      .filter(m => m.role === 'Field Technician' || m.role === 'Administrator' || m.role === 'Manager')
+      .sort((a, b) => (mechanicWorkload[a.uid] || 0) - (mechanicWorkload[b.uid] || 0));
+  }, [mechanics, mechanicWorkload]);
+
+  // Auto-select mechanic with lowest workload if none selected
+  useEffect(() => {
+    if (!formData.mechanicId && sortedMechanics.length > 0) {
+      setFormData(prev => ({ ...prev, mechanicId: sortedMechanics[0].uid }));
+    }
+  }, [sortedMechanics]);
 
   // Filter machinery based on selected customer
   const filteredMachinery = selectedCustomerId 
@@ -2579,26 +3842,30 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
     if (!machine) return;
 
     try {
-      const docRef = await addDoc(collection(db, 'serviceTickets'), {
-        machineryId: formData.machineryId,
+      const { data: ticketData, error: ticketError } = await supabase.from('service_tickets').insert({
+        machinery_id: formData.machineryId,
         description: formData.description,
-        customerId: selectedCustomerId,
-        mechanicId: formData.mechanicId,
+        customer_id: selectedCustomerId,
+        mechanic_id: formData.mechanicId,
         status: 'Open',
-        openedAt: new Date().toISOString()
-      });
+        opened_at: new Date().toISOString()
+      }).select().single();
+
+      if (ticketError) throw ticketError;
+
       // Update machinery status to Under Repair
-      await updateDoc(doc(db, 'machinery', machine.id), { status: 'Under Repair' });
+      const { error: machError } = await supabase.from('machinery').update({ status: 'Under Repair' }).eq('id', machine.id);
+      if (machError) throw machError;
       
       if (profile) {
-        await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceTicket', docRef.id, `Created ticket: ${formData.description}`);
+        await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceTicket', ticketData.id, `Created ticket: ${formData.description}`);
         await logAudit(profile.uid, profile.name, 'UPDATE', 'Machinery', machine.id, 'Status changed to Under Repair');
       }
       addToast("Service ticket opened successfully", "success");
       onClose();
     } catch (err) {
       addToast("Failed to open ticket", "error");
-      handleFirestoreError(err, OperationType.CREATE, 'serviceTickets');
+      handleSupabaseError(err, OperationType.CREATE, 'service_tickets');
     } finally {
       setLoading(false);
     }
@@ -2652,8 +3919,10 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
               onChange={e => setFormData({ ...formData, mechanicId: e.target.value })}
             >
               <option value="">SELECT MECHANIC...</option>
-              {mechanics.map(m => (
-                <option key={m.uid} value={m.uid}>{m.name} ({m.role})</option>
+              {sortedMechanics.map((m, index) => (
+                <option key={m.uid} value={m.uid}>
+                  {m.name} ({m.role}) - {mechanicWorkload[m.uid] || 0} Active Tickets {index === 0 ? '★ SUGGESTED' : ''}
+                </option>
               ))}
             </select>
           </div>
@@ -2687,97 +3956,239 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [mechanic, setMechanic] = useState<UserProfile | null>(null);
   const [availableParts, setAvailableParts] = useState<Part[]>([]);
-  const [selectedParts, setSelectedParts] = useState<{ partId: string, quantity: number }[]>([]);
+  const [selectedParts, setSelectedParts] = useState<UsedPart[]>([]);
+  const [manualPart, setManualPart] = useState({ name: '', sku: '' });
   const [newLog, setNewLog] = useState({ workDone: '', partsReplaced: '' });
+  const [selectedMechanicId, setSelectedMechanicId] = useState<string>(profile?.uid || '');
+  const [allMechanics, setAllMechanics] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showConfirmParts, setShowConfirmParts] = useState(false);
+  const [satisfactionScore, setSatisfactionScore] = useState<number>(5);
+  const [showSatisfactionModal, setShowSatisfactionModal] = useState(false);
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'serviceTickets', ticket.id, 'logs'), orderBy('timestamp', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceLog)));
-    });
 
-    // Fetch parts
-    const unsubParts = onSnapshot(query(collection(db, 'parts'), orderBy('name', 'asc')), (snap) => {
-      setAvailableParts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Part)));
-    });
+    const fetchLogs = async () => {
+      const { data, error } = await supabase
+        .from('service_logs')
+        .select('*')
+        .eq('ticket_id', ticket.id)
+        .order('timestamp', { ascending: false });
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'service_logs');
+      } else {
+        const mappedLogs = (data as any[]).map(l => ({
+          ...l,
+          ticketId: l.ticket_id,
+          mechanicId: l.mechanic_id,
+          mechanicName: l.mechanic_name,
+          partsReplaced: l.parts_replaced,
+          usedParts: l.used_parts
+        })) as ServiceLog[];
+        setLogs(mappedLogs);
+      }
+    };
 
-    // Fetch related data for PDF
-    getDoc(doc(db, 'machinery', ticket.machineryId))
-      .then(d => setMachinery({ id: d.id, ...d.data() } as Machinery))
-      .catch(err => handleFirestoreError(err, OperationType.GET, `machinery/${ticket.machineryId}`));
-    
-    getDoc(doc(db, 'customers', ticket.customerId))
-      .then(d => setCustomer({ id: d.id, ...d.data() } as Customer))
-      .catch(err => handleFirestoreError(err, OperationType.GET, `customers/${ticket.customerId}`));
+    const fetchParts = async () => {
+      const { data, error } = await supabase
+        .from('parts')
+        .select('*')
+        .order('name', { ascending: true });
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'parts');
+      } else {
+        const mappedParts = (data as any[]).map(p => ({
+          ...p,
+          minQuantity: p.min_quantity,
+          unitPrice: p.unit_price,
+          updatedAt: p.updated_at
+        })) as Part[];
+        setAvailableParts(mappedParts);
+      }
+    };
 
-    if (ticket.mechanicId) {
-      getDoc(doc(db, 'users', ticket.mechanicId))
-        .then(d => setMechanic({ uid: d.id, ...d.data() } as UserProfile))
-        .catch(err => handleFirestoreError(err, OperationType.GET, `users/${ticket.mechanicId}`));
+    const fetchRelatedData = async () => {
+      try {
+        const [machRes, custRes] = await Promise.all([
+          supabase.from('machinery').select('*').eq('id', ticket.machineryId).single(),
+          supabase.from('customers').select('*').eq('id', ticket.customerId).single()
+        ]);
+
+        if (machRes.error) throw machRes.error;
+        if (custRes.error) throw custRes.error;
+
+        const mMach = machRes.data;
+        const mappedMach = {
+          ...mMach,
+          customerId: mMach.customer_id,
+          serialNumber: mMach.serial_number,
+          purchaseDate: mMach.purchase_date,
+          warrantyExpiry: mMach.warranty_expiry,
+          lastServiceDate: mMach.last_service_date,
+          nextServiceDueDate: mMach.next_service_due_date
+        } as Machinery;
+
+        const mCust = custRes.data;
+        const mappedCust = {
+          ...mCust,
+          invoiceDate: mCust.invoice_date,
+          invoiceNumber: mCust.invoice_number,
+          invoiceAmount: mCust.invoice_amount,
+          createdAt: mCust.created_at
+        } as Customer;
+
+        setMachinery(mappedMach);
+        setCustomer(mappedCust);
+
+        if (ticket.mechanicId) {
+          const { data: mechData, error: mechError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('uid', ticket.mechanicId)
+            .single();
+          
+          if (mechError) throw mechError;
+          setMechanic({ 
+            uid: mechData.uid, 
+            name: mechData.name,
+            email: mechData.email,
+            role: mechData.role,
+            createdAt: mechData.created_at 
+          } as UserProfile);
+        }
+      } catch (err) {
+        handleSupabaseError(err, OperationType.GET, 'ticket-related-data');
+      }
+    };
+
+    const fetchAllMechanics = async () => {
+      const { data, error } = await supabase.from('users').select('*');
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'users');
+      } else {
+        setAllMechanics(data.map(d => ({ 
+          uid: d.uid, 
+          name: d.name,
+          email: d.email,
+          role: d.role,
+          createdAt: d.created_at 
+        } as UserProfile)));
+      }
+    };
+
+    fetchLogs();
+    fetchParts();
+    fetchRelatedData();
+    fetchAllMechanics();
+
+    const logsSub = supabase
+      .channel(`ticket_logs_${ticket.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_logs', filter: `ticket_id=eq.${ticket.id}` }, () => fetchLogs())
+      .subscribe();
+
+    const partsSub = supabase
+      .channel('parts_all_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts' }, () => fetchParts())
+      .subscribe();
+
+    const mechanicsSub = supabase
+      .channel('users_all_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchAllMechanics())
+      .subscribe();
+
+    return () => {
+      logsSub.unsubscribe();
+      partsSub.unsubscribe();
+      mechanicsSub.unsubscribe();
+    };
+  }, [ticket.id, ticket.machineryId, ticket.customerId, ticket.mechanicId, profile]);
+
+  useEffect(() => {
+    if (profile && !selectedMechanicId) {
+      setSelectedMechanicId(profile.uid);
     }
-
-    return unsub;
-  }, [ticket.id, ticket.machineryId, ticket.customerId, ticket.mechanicId]);
+  }, [profile]);
 
   const handleAddLog = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newLog.workDone) return;
+
+    if (selectedParts.length > 0 && !showConfirmParts) {
+      setShowConfirmParts(true);
+      return;
+    }
+
     setLoading(true);
     try {
-      const batch = writeBatch(db);
+      const selectedMechanic = allMechanics.find(m => m.uid === selectedMechanicId);
       
       const logData = {
-        ...newLog,
-        ticketId: ticket.id,
-        mechanicId: profile?.uid,
+        ticket_id: ticket.id,
+        mechanic_id: selectedMechanicId,
+        mechanic_name: selectedMechanic?.name || profile?.name || 'Unknown Mechanic',
+        work_done: newLog.workDone,
+        parts_replaced: newLog.partsReplaced,
         timestamp: new Date().toISOString(),
-        usedParts: selectedParts.map(sp => ({
-          partId: sp.partId,
-          partName: availableParts.find(p => p.id === sp.partId)?.name || 'Unknown Part',
-          quantity: sp.quantity
-        }))
+        used_parts: selectedParts
       };
 
-      const logRef = doc(collection(db, 'serviceTickets', ticket.id, 'logs'));
-      batch.set(logRef, logData);
+      const { data: logRes, error: logError } = await supabase.from('service_logs').insert(logData).select().single();
+      if (logError) throw logError;
 
       // Deduct from inventory
       for (const sp of selectedParts) {
-        const part = availableParts.find(p => p.id === sp.partId);
-        if (part) {
-          const partRef = doc(db, 'parts', sp.partId);
-          const newQty = part.quantity - sp.quantity;
-          batch.update(partRef, { 
-            quantity: newQty,
-            updatedAt: new Date().toISOString()
-          });
+        if (sp.partId) {
+          const part = availableParts.find(p => p.id === sp.partId);
+          if (part) {
+            const newQty = part.quantity - sp.quantity;
+            const { error: partError } = await supabase
+              .from('parts')
+              .update({ 
+                quantity: newQty,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', sp.partId);
+            
+            if (partError) throw partError;
 
-          // Trigger low stock notification if needed
-          if (newQty <= (part.minQuantity || 5)) {
-            const notifRef = doc(collection(db, 'notifications'));
-            batch.set(notifRef, {
-              type: 'LOW_STOCK',
-              status: 'SYSTEM',
-              sentAt: new Date().toISOString(),
-              partId: sp.partId,
-              partName: part.name,
-              message: `LOW STOCK ALERT: ${part.name} (SKU: ${part.sku}) is down to ${newQty} units. Minimum required: ${part.minQuantity || 5}.`
-            });
+            // Trigger low stock notification if needed
+            if (newQty <= (part.minQuantity || 5)) {
+              await supabase.from('notifications').insert({
+                type: 'LOW_STOCK',
+                status: 'SYSTEM',
+                sent_at: new Date().toISOString(),
+                part_id: sp.partId,
+                part_name: part.name,
+                message: `LOW STOCK ALERT: ${part.name} (SKU: ${part.sku}) is down to ${newQty} units. Minimum required: ${part.minQuantity || 5}.`
+              });
+            }
           }
         }
       }
 
       // If ticket was "Open", move to "In Progress"
       if (ticket.status === 'Open') {
-        batch.update(doc(db, 'serviceTickets', ticket.id), { status: 'In Progress' });
+        const { error: ticketUpdateError } = await supabase
+          .from('service_tickets')
+          .update({ status: 'In Progress' })
+          .eq('id', ticket.id);
+        
+        if (ticketUpdateError) throw ticketUpdateError;
       }
 
-      await batch.commit();
+      // Check for low stock to show immediate toast
+      for (const sp of selectedParts) {
+        const part = availableParts.find(p => p.id === sp.partId);
+        if (part && (part.quantity - sp.quantity) <= (part.minQuantity || 5)) {
+          addToast(`LOW STOCK: ${part.name} is now at ${part.quantity - sp.quantity} units!`, "error");
+        }
+      }
 
       if (profile) {
-        await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceLog', logRef.id, `Added log to ticket ${ticket.id}: ${newLog.workDone}`);
+        await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceLog', logRes.id, `Added log to ticket ${ticket.id}: ${newLog.workDone}`);
         for (const sp of selectedParts) {
           await logAudit(profile.uid, profile.name, 'UPDATE', 'Part', sp.partId, `Deducted ${sp.quantity} units for ticket ${ticket.id}`);
         }
@@ -2786,35 +4197,54 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
       addToast("Service log added successfully", "success");
       setNewLog({ workDone: '', partsReplaced: '' });
       setSelectedParts([]);
+      setShowConfirmParts(false);
     } catch (err) {
       addToast("Failed to add service log", "error");
-      handleFirestoreError(err, OperationType.WRITE, 'serviceTickets');
+      handleSupabaseError(err, OperationType.WRITE, 'service_logs');
     } finally {
       setLoading(false);
     }
   };
 
   const handleCompleteTicket = async () => {
+    if (!showSatisfactionModal) {
+      setShowSatisfactionModal(true);
+      return;
+    }
+
     setLoading(true);
     try {
-      await updateDoc(doc(db, 'serviceTickets', ticket.id), { 
-        status: 'Completed',
-        closedAt: new Date().toISOString()
-      });
+      const { error: ticketError } = await supabase
+        .from('service_tickets')
+        .update({ 
+          status: 'Completed',
+          closed_at: new Date().toISOString(),
+          satisfaction_score: satisfactionScore
+        })
+        .eq('id', ticket.id);
+      
+      if (ticketError) throw ticketError;
+
       // Update machinery status back to Operational
-      await updateDoc(doc(db, 'machinery', ticket.machineryId), { 
-        status: 'Operational',
-        lastServiceDate: new Date().toISOString().split('T')[0]
-      });
+      const { error: machError } = await supabase
+        .from('machinery')
+        .update({ 
+          status: 'Operational',
+          last_service_date: new Date().toISOString().split('T')[0]
+        })
+        .eq('id', ticket.machineryId);
+      
+      if (machError) throw machError;
+
       if (profile) {
-        await logAudit(profile.uid, profile.name, 'UPDATE', 'ServiceTicket', ticket.id, 'Status changed to Completed');
+        await logAudit(profile.uid, profile.name, 'UPDATE', 'ServiceTicket', ticket.id, `Status changed to Completed with satisfaction score ${satisfactionScore}`);
         await logAudit(profile.uid, profile.name, 'UPDATE', 'Machinery', ticket.machineryId, 'Status changed to Operational');
       }
       addToast("Service ticket completed successfully", "success");
       onClose();
     } catch (err) {
       addToast("Failed to complete ticket", "error");
-      handleFirestoreError(err, OperationType.UPDATE, 'serviceTickets');
+      handleSupabaseError(err, OperationType.UPDATE, 'service_tickets');
     } finally {
       setLoading(false);
     }
@@ -2835,7 +4265,7 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
             <div>
               <div className="flex items-center gap-3 mb-2">
                 <span className="text-[10px] font-bold px-2 py-0.5 bg-[#141414] text-white uppercase tracking-widest">{ticket.status}</span>
-                <span className="text-[10px] font-mono text-gray-400 uppercase">TICKET #{ticket.id.slice(0, 8)}</span>
+                <span className="text-[10px] font-mono text-gray-400 uppercase">TICKET #{ticket.id?.slice(0, 8)}</span>
               </div>
               <h2 className="text-2xl font-bold tracking-tighter uppercase italic">{ticket.description}</h2>
               {machinery && <p className="text-[10px] font-mono text-gray-400 uppercase tracking-widest mt-1">{machinery.model} • #{machinery.serialNumber}</p>}
@@ -2853,6 +4283,20 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
               <div className="bg-gray-50 border border-[#141414] p-6">
                 <h3 className="text-xs font-bold tracking-widest uppercase mb-4 italic">Log New Work Entry</h3>
                 <form onSubmit={handleAddLog} className="space-y-4">
+                  {(profile?.role === 'Administrator' || profile?.role === 'Manager') && (
+                    <div>
+                      <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Mechanic Performing Work</label>
+                      <select 
+                        className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+                        value={selectedMechanicId}
+                        onChange={e => setSelectedMechanicId(e.target.value)}
+                      >
+                        {allMechanics.map(m => (
+                          <option key={m.uid} value={m.uid}>{m.name} ({m.role})</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div>
                     <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Work Done *</label>
                     <textarea 
@@ -2875,7 +4319,7 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                       />
                     </div>
                     <div>
-                      <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Inventory Parts</label>
+                      <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Inventory & Manual Parts</label>
                       <div className="space-y-2">
                         <select 
                           className="w-full p-2 border border-[#141414] text-[10px] font-mono focus:outline-none bg-white"
@@ -2883,36 +4327,82 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                             const partId = e.target.value;
                             if (!partId) return;
                             if (selectedParts.find(sp => sp.partId === partId)) return;
-                            setSelectedParts([...selectedParts, { partId, quantity: 1 }]);
+                            const part = availableParts.find(p => p.id === partId);
+                            if (part) {
+                              setSelectedParts([...selectedParts, { 
+                                partId: part.id, 
+                                partName: part.name, 
+                                sku: part.sku, 
+                                quantity: 1 
+                              }]);
+                            }
+                            setShowConfirmParts(false);
                             e.target.value = '';
                           }}
                         >
-                          <option value="">SELECT PART...</option>
+                          <option value="">SELECT FROM INVENTORY...</option>
                           {availableParts.filter(p => p.quantity > 0).map(p => (
-                            <option key={p.id} value={p.id}>{p.name} ({p.quantity})</option>
+                            <option key={p.id} value={p.id}>{p.name} (SKU: {p.sku}) - Qty: {p.quantity}</option>
                           ))}
                         </select>
+                        
+                        <div className="flex gap-2">
+                          <input 
+                            type="text" 
+                            placeholder="MANUAL PART NAME"
+                            className="flex-1 p-2 border border-[#141414] text-[10px] font-mono focus:outline-none"
+                            value={manualPart.name}
+                            onChange={e => setManualPart({ ...manualPart, name: e.target.value })}
+                          />
+                          <input 
+                            type="text" 
+                            placeholder="SKU"
+                            className="w-24 p-2 border border-[#141414] text-[10px] font-mono focus:outline-none"
+                            value={manualPart.sku}
+                            onChange={e => setManualPart({ ...manualPart, sku: e.target.value })}
+                          />
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              if (!manualPart.name || !manualPart.sku) return;
+                              setSelectedParts([...selectedParts, { 
+                                partName: manualPart.name, 
+                                sku: manualPart.sku, 
+                                quantity: 1 
+                              }]);
+                              setManualPart({ name: '', sku: '' });
+                            }}
+                            className="px-3 py-2 bg-[#141414] text-white text-[10px] font-bold uppercase"
+                          >
+                            ADD
+                          </button>
+                        </div>
+
                         <div className="flex flex-wrap gap-1">
                           {selectedParts.map((sp, idx) => {
-                            const part = availableParts.find(p => p.id === sp.partId);
+                            const part = sp.partId ? availableParts.find(p => p.id === sp.partId) : null;
                             return (
                               <div key={idx} className="flex items-center gap-1 bg-white border border-[#141414] px-1.5 py-0.5">
-                                <span className="text-[8px] font-bold uppercase truncate max-w-[60px]">{part?.name}</span>
+                                <span className="text-[8px] font-bold uppercase tracking-tighter max-w-[100px] truncate">
+                                  {sp.partName} <span className="text-gray-400">({sp.sku})</span>
+                                </span>
                                 <input 
-                                  type="number"
+                                  type="number" 
                                   min="1"
-                                  max={part?.quantity || 1}
-                                  className="w-8 bg-transparent border-none text-[8px] font-bold focus:outline-none text-center"
+                                  max={part?.quantity || 999}
+                                  className="w-8 text-[8px] font-mono border-none focus:outline-none bg-gray-50 text-center"
                                   value={sp.quantity}
                                   onChange={(e) => {
-                                    const qty = Math.min(part?.quantity || 1, Math.max(1, parseInt(e.target.value) || 1));
-                                    setSelectedParts(selectedParts.map((p, i) => i === idx ? { ...p, quantity: qty } : p));
+                                    const val = Math.min(part?.quantity || 999, Math.max(1, parseInt(e.target.value) || 1));
+                                    const next = [...selectedParts];
+                                    next[idx].quantity = val;
+                                    setSelectedParts(next);
                                   }}
                                 />
                                 <button 
                                   type="button"
                                   onClick={() => setSelectedParts(selectedParts.filter((_, i) => i !== idx))}
-                                  className="text-red-600"
+                                  className="text-red-500 hover:text-red-700"
                                 >
                                   <Plus className="rotate-45" size={10} />
                                 </button>
@@ -2923,12 +4413,27 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                       </div>
                     </div>
                   </div>
+                  {showConfirmParts && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 text-[10px] font-bold text-amber-900 uppercase tracking-widest flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle size={14} />
+                        <span>Confirm: Deduct {selectedParts.reduce((acc, p) => acc + p.quantity, 0)} parts from inventory?</span>
+                      </div>
+                      <button 
+                        type="button" 
+                        onClick={() => setShowConfirmParts(false)}
+                        className="text-gray-500 hover:text-gray-800"
+                      >
+                        CANCEL
+                      </button>
+                    </div>
+                  )}
                   <button 
                     type="submit" 
                     disabled={loading}
-                    className="w-full py-2 bg-[#141414] text-white text-xs font-bold hover:bg-gray-800 transition-colors disabled:opacity-50"
+                    className={`w-full py-2 text-white text-xs font-bold transition-colors disabled:opacity-50 ${showConfirmParts ? 'bg-amber-600 hover:bg-amber-700' : 'bg-[#141414] hover:bg-gray-800'}`}
                   >
-                    {loading ? 'LOGGING...' : 'ADD LOG ENTRY'}
+                    {loading ? 'LOGGING...' : (showConfirmParts ? 'CONFIRM & ADD LOG ENTRY' : 'ADD LOG ENTRY')}
                   </button>
                 </form>
               </div>
@@ -2941,10 +4446,12 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                   <p className="text-center py-8 text-gray-400 text-xs font-mono border border-dashed border-gray-300">NO LOGS RECORDED YET</p>
                 ) : (
                   logs.map(log => (
-                    <div key={log.id} className="p-4 border border-[#141414] bg-white relative">
+                    <div key={log.id} className="p-4 border border-[#141414] bg-white relative shadow-[4px_4px_0px_0px_rgba(20,20,20,0.05)]">
                       <div className="flex justify-between items-start mb-2">
                         <span className="text-[9px] font-mono text-gray-400">{new Date(log.timestamp).toLocaleString()}</span>
-                        <span className="text-[9px] font-bold uppercase tracking-widest text-gray-500">MECHANIC ID: {log.mechanicId.slice(0, 5)}</span>
+                        <span className="text-[9px] font-bold uppercase tracking-widest text-[#141414] bg-gray-100 px-2 py-0.5 border border-gray-200">
+                          {log.mechanicName || `ID: ${log.mechanicId?.slice(0, 5)}`}
+                        </span>
                       </div>
                       <p className="text-sm mb-3 font-medium">{log.workDone}</p>
                       {log.partsReplaced && (
@@ -2956,7 +4463,7 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                         <div className="flex flex-wrap gap-2">
                           {log.usedParts.map((up, idx) => (
                             <span key={idx} className="text-[9px] font-bold bg-gray-50 text-gray-600 border border-gray-200 px-1.5 py-0.5 uppercase">
-                              {up.partName} x{up.quantity}
+                              {up.partName} <span className="text-gray-400">({up.sku})</span> x{up.quantity}
                             </span>
                           ))}
                         </div>
@@ -2975,8 +4482,8 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
               <div className="space-y-3">
                 <InfoItem label="Opened" value={new Date(ticket.openedAt).toLocaleDateString()} />
                 {ticket.closedAt && <InfoItem label="Closed" value={new Date(ticket.closedAt).toLocaleDateString()} />}
-                <InfoItem label="Machine ID" value={ticket.machineryId.slice(0, 8)} />
-                <InfoItem label="Customer ID" value={ticket.customerId.slice(0, 8)} />
+                <InfoItem label="Machine ID" value={ticket.machineryId?.slice(0, 8) || ''} />
+                <InfoItem label="Customer ID" value={ticket.customerId?.slice(0, 8) || ''} />
                 {mechanic && <InfoItem label="Assigned To" value={mechanic.name} />}
               </div>
             </div>
@@ -3002,13 +4509,55 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
             )}
 
             {ticket.status !== 'Completed' && (
-              <button 
-                onClick={handleCompleteTicket}
-                disabled={loading}
-                className="w-full py-4 bg-green-600 text-white font-bold text-sm tracking-widest hover:bg-green-700 transition-all shadow-[4px_4px_0px_0px_rgba(22,101,52,1)] disabled:opacity-50"
-              >
-                COMPLETE SERVICE
-              </button>
+              <div className="space-y-4">
+                {showSatisfactionModal && (
+                  <div className="bg-amber-50 border border-amber-200 p-4 space-y-3 shadow-[4px_4px_0px_0px_rgba(217,119,6,0.1)]">
+                    <p className="text-[10px] font-bold text-amber-900 uppercase tracking-widest flex items-center gap-2">
+                      <AlertCircle size={14} /> Rate Customer Satisfaction (1-5)
+                    </p>
+                    <div className="flex justify-between gap-2">
+                      {[1, 2, 3, 4, 5].map(score => (
+                        <button
+                          key={score}
+                          onClick={() => setSatisfactionScore(score)}
+                          className={`flex-1 py-2 text-xs font-bold border border-[#141414] transition-all ${
+                            satisfactionScore === score 
+                              ? 'bg-[#141414] text-white' 
+                              : 'bg-white text-[#141414] hover:bg-gray-100'
+                          }`}
+                        >
+                          {score}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={handleCompleteTicket}
+                        disabled={loading}
+                        className="flex-1 py-2 bg-green-600 text-white font-bold text-[10px] tracking-widest hover:bg-green-700 transition-all uppercase"
+                      >
+                        {loading ? 'COMPLETING...' : 'CONFIRM COMPLETION'}
+                      </button>
+                      <button 
+                        onClick={() => setShowSatisfactionModal(false)}
+                        className="px-4 py-2 border border-gray-300 text-gray-500 text-[10px] font-bold uppercase hover:bg-gray-50"
+                      >
+                        CANCEL
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {!showSatisfactionModal && (
+                  <button 
+                    onClick={handleCompleteTicket}
+                    disabled={loading}
+                    className="w-full py-4 bg-green-600 text-white font-bold text-sm tracking-widest hover:bg-green-700 transition-all shadow-[4px_4px_0px_0px_rgba(22,101,52,1)] disabled:opacity-50"
+                  >
+                    COMPLETE SERVICE
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -3076,13 +4625,16 @@ const generatePDFReport = async (ticket: ServiceTicket, machinery: Machinery, cu
   doc.text(`Opened: ${new Date(ticket.openedAt).toLocaleString()}`, 20, 167);
   if (ticket.closedAt) {
     doc.text(`Completed: ${new Date(ticket.closedAt).toLocaleString()}`, 20, 174);
+    if (ticket.satisfactionScore) {
+      doc.text(`Customer Satisfaction: ${ticket.satisfactionScore} / 5`, 20, 181);
+    }
   }
 
   // Work Logs Table
   const tableData = logs.map(log => {
     const partsText = [
       log.partsReplaced,
-      ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
+      ...(log.usedParts || []).map(up => `${up.partName} [${up.sku}] (x${up.quantity})`)
     ].filter(Boolean).join(', ');
 
     return [
@@ -3110,7 +4662,7 @@ const generatePDFReport = async (ticket: ServiceTicket, machinery: Machinery, cu
     doc.text(`Generated on ${new Date().toLocaleString()} - Page ${i} of ${pageCount}`, 105, 285, { align: 'center' });
   }
 
-  doc.save(`Service_Report_${ticket.id.slice(0, 8)}.pdf`);
+  doc.save(`Service_Report_${ticket.id?.slice(0, 8) || 'unknown'}.pdf`);
 };
 
 const generateMachineryFullReport = (machinery: Machinery, customer: Customer, tickets: ServiceTicket[], allLogs: Record<string, ServiceLog[]>) => {
@@ -3201,7 +4753,7 @@ const generateMachineryFullReport = (machinery: Machinery, customer: Customer, t
         logs.forEach(log => {
           const partsText = [
             log.partsReplaced,
-            ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
+            ...(log.usedParts || []).map(up => `${up.partName} [${up.sku}] (x${up.quantity})`)
           ].filter(Boolean).join(', ');
 
           const logText = `- ${new Date(log.timestamp).toLocaleDateString()}: ${log.workDone}${partsText ? ` (Parts: ${partsText})` : ''}`;
@@ -3239,37 +4791,79 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
   const [tickets, setTickets] = useState<ServiceTicket[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingReport, setLoadingReport] = useState(false);
+  const [searchMachine, setSearchMachine] = useState('');
 
   useEffect(() => {
     if (!profile) return;
-    getDocs(collection(db, 'machinery'))
-      .then(snap => {
-        setMachinery(snap.docs.map(d => ({ id: d.id, ...d.data() } as Machinery)));
-      })
-      .catch(err => handleFirestoreError(err, OperationType.LIST, 'machinery'));
+    
+    const fetchHistoryData = async () => {
+      try {
+        const [machRes, custRes] = await Promise.all([
+          supabase.from('machinery').select('*'),
+          supabase.from('customers').select('*')
+        ]);
 
-    getDocs(collection(db, 'customers'))
-      .then(snap => {
-        const map: Record<string, Customer> = {};
-        snap.docs.forEach(d => map[d.id] = { id: d.id, ...d.data() } as Customer);
-        setCustomers(map);
-      })
-      .catch(err => handleFirestoreError(err, OperationType.LIST, 'customers'));
-  }, []);
+        if (machRes.error) throw machRes.error;
+        if (custRes.error) throw custRes.error;
+
+        setMachinery((machRes.data as any[]).map(m => ({
+          ...m,
+          customerId: m.customer_id,
+          serialNumber: m.serial_number,
+          purchaseDate: m.purchase_date,
+          warrantyExpiry: m.warranty_expiry,
+          lastServiceDate: m.last_service_date,
+          nextServiceDueDate: m.next_service_due_date
+        })) as Machinery[]);
+
+        const custMap: Record<string, Customer> = {};
+        (custRes.data as any[]).forEach(c => {
+          custMap[c.id] = {
+            ...c,
+            invoiceDate: c.invoice_date,
+            invoiceNumber: c.invoice_number,
+            invoiceAmount: c.invoice_amount,
+            createdAt: c.created_at
+          } as Customer;
+        });
+        setCustomers(custMap);
+      } catch (err) {
+        handleSupabaseError(err, OperationType.LIST, 'history-view-init');
+      }
+    };
+
+    fetchHistoryData();
+  }, [profile]);
 
   useEffect(() => {
     if (!selectedId) return;
     setLoading(true);
-    const q = query(collection(db, 'serviceTickets'), where('machineryId', '==', selectedId), orderBy('openedAt', 'desc'));
-    getDocs(q)
-      .then(snap => {
-        setTickets(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceTicket)));
-        setLoading(false);
-      })
-      .catch(err => {
-        handleFirestoreError(err, OperationType.LIST, 'serviceTickets');
-        setLoading(false);
-      });
+    
+    const fetchTickets = async () => {
+      const { data, error } = await supabase
+        .from('service_tickets')
+        .select('*')
+        .eq('machinery_id', selectedId)
+        .order('opened_at', { ascending: false });
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'history-tickets');
+      } else {
+        const mappedTickets = (data as any[]).map(t => ({
+          ...t,
+          machineryId: t.machinery_id,
+          customerId: t.customer_id,
+          mechanicId: t.mechanic_id,
+          openedAt: t.opened_at,
+          closedAt: t.closed_at,
+          satisfactionScore: t.satisfaction_score
+        })) as ServiceTicket[];
+        setTickets(mappedTickets);
+      }
+      setLoading(false);
+    };
+
+    fetchTickets();
   }, [selectedId]);
 
   const handleDownloadFullReport = async () => {
@@ -3285,57 +4879,109 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
       // Fetch all logs for all tickets
       const allLogs: Record<string, ServiceLog[]> = {};
       for (const t of tickets) {
-        const logsSnap = await getDocs(query(collection(db, 'serviceTickets', t.id, 'logs'), orderBy('timestamp', 'asc')));
-        allLogs[t.id] = logsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceLog));
+        const { data: logsData, error: logsError } = await supabase
+          .from('service_logs')
+          .select('*')
+          .eq('ticket_id', t.id)
+          .order('timestamp', { ascending: true });
+        
+        if (logsError) throw logsError;
+
+        allLogs[t.id] = (logsData as any[]).map(l => ({
+          ...l,
+          ticketId: l.ticket_id,
+          mechanicId: l.mechanic_id,
+          mechanicName: l.mechanic_name,
+          partsReplaced: l.parts_replaced,
+          usedParts: l.used_parts
+        })) as ServiceLog[];
       }
 
       generateMachineryFullReport(m, customer, tickets, allLogs);
       
       await logAudit(profile.uid, profile.name, 'DOWNLOAD', 'MachineryReport', m.id, `Generated full report for ${m.model} from History View`);
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, 'machinery_report');
+      handleSupabaseError(err, OperationType.LIST, 'machinery_report');
     } finally {
       setLoadingReport(false);
     }
   };
 
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-8">
-      <div className="bg-white border border-[#141414] p-6 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
-        <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-2 uppercase">Select Machinery to View History</label>
-        <select 
-          className="w-full p-3 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
-          value={selectedId || ''}
-          onChange={e => setSelectedId(e.target.value)}
-        >
-          <option value="">SELECT MACHINE...</option>
-          {machinery.map(m => <option key={m.id} value={m.id}>{m.model} (#{m.serialNumber})</option>)}
-        </select>
-      </div>
+  const filteredMachinery = machinery.filter(m => 
+    m.model.toLowerCase().includes(searchMachine.toLowerCase()) || 
+    m.serialNumber.toLowerCase().includes(searchMachine.toLowerCase()) ||
+    customers[m.customerId]?.name.toLowerCase().includes(searchMachine.toLowerCase())
+  );
 
-      {!selectedId ? (
-        <div className="flex items-center justify-center h-64 border border-dashed border-[#141414]">
-          <div className="text-center">
-            <History size={48} className="mx-auto mb-4 text-gray-300" />
-            <p className="text-xs font-bold tracking-widest text-gray-400 uppercase italic">Select a machine above to see its full history.</p>
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col lg:flex-row gap-8 h-[calc(100vh-180px)]">
+      {/* Left Sidebar: Machine List */}
+      <div className="w-full lg:w-80 flex flex-col bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+        <div className="p-4 border-b border-[#141414] bg-gray-50">
+          <h3 className="text-xs font-bold tracking-widest uppercase italic mb-3">Select Machinery</h3>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={14} />
+            <input 
+              type="text" 
+              placeholder="SEARCH MACHINE..." 
+              className="w-full pl-9 pr-4 py-2 bg-white border border-[#141414] text-[10px] font-mono focus:outline-none"
+              value={searchMachine}
+              onChange={e => setSearchMachine(e.target.value)}
+            />
           </div>
         </div>
-      ) : loading ? (
-        <div className="flex justify-center p-12"><LoadingSpinner /></div>
-      ) : (
-        <div className="space-y-6">
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-[#141414] pb-4">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 flex items-center justify-center border border-[#141414] bg-[#141414] text-white shrink-0">
-                {(() => {
-                  const m = machinery.find(m => m.id === selectedId);
-                  return m ? getMachineryIcon(m.type, 24) : <Construction size={24} />;
-                })()}
-              </div>
-              <div>
-                <h3 className="text-xs font-bold tracking-widest uppercase italic text-gray-400">Service History for</h3>
-                <div className="flex items-baseline gap-3">
-                  <p className="text-xl font-bold tracking-tighter uppercase">{machinery.find(m => m.id === selectedId)?.model}</p>
+        <div className="flex-1 overflow-y-auto">
+          {filteredMachinery.length === 0 ? (
+            <div className="p-8 text-center text-gray-400 text-[10px] font-mono uppercase italic">No machines found</div>
+          ) : (
+            filteredMachinery.map(m => (
+              <button
+                key={m.id}
+                onClick={() => setSelectedId(m.id)}
+                className={`w-full p-4 text-left border-b border-gray-100 transition-all hover:bg-gray-50 flex items-center gap-3 ${selectedId === m.id ? 'bg-gray-100 border-l-4 border-l-[#141414]' : ''}`}
+              >
+                <div className={`w-8 h-8 flex items-center justify-center border border-[#141414] ${selectedId === m.id ? 'bg-[#141414] text-white' : 'bg-white text-[#141414]'}`}>
+                  {getMachineryIcon(m.type, 16)}
+                </div>
+                <div className="overflow-hidden">
+                  <p className="text-[11px] font-bold uppercase truncate">{m.model}</p>
+                  <p className="text-[9px] font-mono text-gray-400 truncate">#{m.serialNumber}</p>
+                  <p className="text-[9px] font-bold text-gray-500 truncate mt-0.5">{customers[m.customerId]?.name}</p>
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Right Pane: History Details */}
+      <div className="flex-1 flex flex-col bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
+        {!selectedId ? (
+          <div className="flex-1 flex items-center justify-center p-12">
+            <div className="text-center">
+              <History size={64} className="mx-auto mb-6 text-gray-200" />
+              <h2 className="text-xl font-bold tracking-tighter uppercase italic mb-2">Service History</h2>
+              <p className="text-xs font-bold tracking-widest text-gray-400 uppercase italic">Select a machine from the list to view its full service history.</p>
+            </div>
+          </div>
+        ) : loading ? (
+          <div className="flex-1 flex items-center justify-center"><LoadingSpinner /></div>
+        ) : (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="p-6 border-b border-[#141414] bg-gray-50 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 flex items-center justify-center border-2 border-[#141414] bg-[#141414] text-white shrink-0 shadow-[4px_4px_0px_0px_rgba(0,0,0,0.1)]">
+                  {(() => {
+                    const m = machinery.find(m => m.id === selectedId);
+                    return m ? getMachineryIcon(m.type, 28) : <Construction size={28} />;
+                  })()}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-xl font-bold tracking-tighter uppercase">{machinery.find(m => m.id === selectedId)?.model}</h3>
+                    <span className="text-[10px] font-mono bg-gray-200 px-2 py-0.5 rounded uppercase">#{machinery.find(m => m.id === selectedId)?.serialNumber}</span>
+                  </div>
                   {(() => {
                     const m = machinery.find(m => m.id === selectedId);
                     const customer = m ? customers[m.customerId] : null;
@@ -3350,41 +4996,64 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
                   })()}
                 </div>
               </div>
+              <button 
+                onClick={handleDownloadFullReport}
+                disabled={loadingReport}
+                className="px-6 py-3 bg-[#141414] text-white text-xs font-bold tracking-widest hover:bg-gray-800 transition-all flex items-center gap-2 disabled:opacity-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,0.2)]"
+              >
+                {loadingReport ? <Clock size={16} className="animate-spin" /> : <Download size={16} />}
+                DOWNLOAD FULL REPORT
+              </button>
             </div>
-            <button 
-              onClick={handleDownloadFullReport}
-              disabled={loadingReport}
-              className="px-4 py-2 bg-[#141414] text-white text-[10px] font-bold tracking-widest hover:bg-gray-800 transition-all flex items-center gap-2 disabled:opacity-50"
-            >
-              {loadingReport ? <Clock size={14} className="animate-spin" /> : <Download size={14} />}
-              DOWNLOAD FULL REPORT
-            </button>
-          </div>
-          {tickets.length === 0 ? (
-            <p className="text-center py-12 text-gray-400 text-xs font-mono border border-[#141414] bg-white">NO SERVICE HISTORY FOUND</p>
-          ) : (
-            <div className="space-y-6">
-              {tickets.map(t => (
-                <div key={t.id} className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
-                  <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
-                    <div>
-                      <span className="text-[9px] font-bold px-2 py-0.5 bg-[#141414] text-white uppercase mr-3">{t.status}</span>
-                      <span className="text-xs font-bold uppercase">{t.description}</span>
-                    </div>
-                    <span className="text-[10px] font-mono text-gray-400">{new Date(t.openedAt).toLocaleDateString()}</span>
-                  </div>
-                  <TicketLogs 
-                    ticketId={t.id} 
-                    ticket={t} 
-                    machinery={machinery.find(m => m.id === selectedId)} 
-                    customer={customers[t.customerId]} 
-                  />
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50/30">
+              {tickets.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-gray-300">
+                  <FileText size={48} className="mb-4 opacity-20" />
+                  <p className="text-xs font-bold tracking-widest uppercase italic">No service history found for this machine.</p>
                 </div>
-              ))}
+              ) : (
+                <div className="space-y-8">
+                  {tickets.map(t => (
+                    <div key={t.id} className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
+                      <div className="p-4 bg-gray-100 border-b border-[#141414] flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                          <span className={`px-2 py-0.5 text-[9px] font-bold border ${
+                            t.status === 'Completed' ? 'bg-green-100 text-green-800 border-green-200' : 
+                            t.status === 'In Progress' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-gray-100 text-gray-800 border-gray-200'
+                          } uppercase`}>
+                            {t.status}
+                          </span>
+                          <span className="text-xs font-bold uppercase tracking-tight">{t.description}</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Opened</p>
+                            <p className="text-[10px] font-mono">{new Date(t.openedAt).toLocaleDateString()}</p>
+                          </div>
+                          {t.closedAt && (
+                            <div className="text-right">
+                              <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Closed</p>
+                              <p className="text-[10px] font-mono">{new Date(t.closedAt).toLocaleDateString()}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <TicketLogs 
+                        ticketId={t.id} 
+                        ticket={t} 
+                        machinery={machinery.find(m => m.id === selectedId)} 
+                        customer={customers[t.customerId]} 
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </motion.div>
   );
 }
@@ -3395,39 +5064,89 @@ function InventoryView() {
   const [parts, setParts] = useState<Part[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('All');
   const [selectedPart, setSelectedPart] = useState<Part | null>(null);
+  const [viewingPart, setViewingPart] = useState<Part | null>(null);
   const [isAdding, setIsAdding] = useState(false);
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'parts'), orderBy('name'));
-    const unsub = onSnapshot(q, (snap) => {
-      setParts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Part)));
-      setLoading(false);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'parts'));
-    return unsub;
-  }, []);
+    
+    const fetchParts = async () => {
+      const { data, error } = await supabase
+        .from('parts')
+        .select('*')
+        .order('name', { ascending: true });
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'parts');
+      } else {
+        const mappedParts = (data as any[]).map(p => ({
+          ...p,
+          minQuantity: p.min_quantity,
+          unitPrice: p.unit_price,
+          updatedAt: p.updated_at
+        })) as Part[];
+        setParts(mappedParts);
+        setLoading(false);
+      }
+    };
 
-  const filtered = parts.filter(p => 
-    p.name.toLowerCase().includes(search.toLowerCase()) || 
-    p.sku.toLowerCase().includes(search.toLowerCase()) ||
-    p.category.toLowerCase().includes(search.toLowerCase())
-  );
+    fetchParts();
+
+    const partsSub = supabase
+      .channel('parts_inventory_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parts' }, () => fetchParts())
+      .subscribe();
+
+    return () => {
+      partsSub.unsubscribe();
+    };
+  }, [profile]);
+
+  const filtered = parts.filter(p => {
+    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) || 
+      p.sku.toLowerCase().includes(search.toLowerCase()) ||
+      p.category?.toLowerCase().includes(search.toLowerCase());
+    
+    const matchesCategory = categoryFilter === 'All' || p.category === categoryFilter;
+    
+    return matchesSearch && matchesCategory;
+  });
 
   if (loading) return <div className="flex justify-center p-12"><LoadingSpinner /></div>;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div className="relative w-96">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-          <input 
-            type="text" 
-            placeholder="SEARCH INVENTORY..." 
-            className="w-full pl-10 pr-4 py-2 bg-white border border-[#141414] text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#141414]"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
+          <div className="relative w-full md:w-80">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+            <input 
+              type="text" 
+              placeholder="SEARCH INVENTORY..." 
+              className="w-full pl-10 pr-4 py-2 bg-white border border-[#141414] text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#141414]"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div className="relative w-full md:w-48">
+            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={14} />
+            <select 
+              className="w-full pl-10 pr-4 py-2 bg-white border border-[#141414] text-xs font-mono focus:outline-none appearance-none cursor-pointer"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+            >
+              <option value="All">ALL CATEGORIES</option>
+              <option value="General">GENERAL</option>
+              <option value="Engine">ENGINE</option>
+              <option value="Hydraulics">HYDRAULICS</option>
+              <option value="Electrical">ELECTRICAL</option>
+              <option value="Tires">TIRES</option>
+              <option value="Filters">FILTERS</option>
+              <option value="Fluids">FLUIDS</option>
+            </select>
+          </div>
         </div>
         {canEditInventory && (
           <button 
@@ -3443,10 +5162,10 @@ function InventoryView() {
         {filtered.map(p => (
           <div 
             key={p.id} 
-            onClick={() => setSelectedPart(p)}
-            className={`bg-white border border-[#141414] p-6 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] hover:shadow-[8px_8px_0px_0px_rgba(20,20,20,1)] transition-all cursor-pointer group relative ${p.quantity <= p.minQuantity ? 'border-amber-500 bg-amber-50/30' : ''}`}
+            onClick={() => setViewingPart(p)}
+            className={`bg-white border border-[#141414] p-6 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] hover:shadow-[8px_8px_0px_0px_rgba(20,20,20,1)] transition-all cursor-pointer group relative ${p.quantity <= (p.minQuantity || 0) ? 'border-amber-500 bg-amber-50/30' : ''}`}
           >
-            {p.quantity <= p.minQuantity && (
+            {p.quantity <= (p.minQuantity || 0) && (
               <div className="absolute top-2 right-2 flex items-center gap-1 text-[8px] font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 border border-amber-200 uppercase tracking-widest">
                 <AlertCircle size={10} /> Low Stock
               </div>
@@ -3464,7 +5183,7 @@ function InventoryView() {
             <div className="flex justify-between items-end">
               <div>
                 <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">Quantity</p>
-                <p className={`text-2xl font-bold tracking-tighter ${p.quantity <= p.minQuantity ? 'text-red-600' : ''}`}>{p.quantity}</p>
+                <p className={`text-2xl font-bold tracking-tighter ${p.quantity <= (p.minQuantity || 0) ? 'text-red-600' : ''}`}>{p.quantity}</p>
               </div>
               <div className="text-right">
                 <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">Unit Price</p>
@@ -3475,6 +5194,17 @@ function InventoryView() {
         ))}
       </div>
 
+      {viewingPart && (
+        <PartDetailModal 
+          part={viewingPart} 
+          onClose={() => setViewingPart(null)} 
+          onEdit={() => {
+            setSelectedPart(viewingPart);
+            setViewingPart(null);
+          }}
+        />
+      )}
+
       {(isAdding || selectedPart) && (
         <PartModal 
           part={selectedPart} 
@@ -3482,6 +5212,79 @@ function InventoryView() {
         />
       )}
     </motion.div>
+  );
+}
+
+function PartDetailModal({ part, onClose, onEdit }: { part: Part, onClose: () => void, onEdit: () => void }) {
+  const { canEditInventory } = useAuth();
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white border border-[#141414] max-w-lg w-full shadow-[12px_12px_0px_0px_rgba(20,20,20,1)] overflow-hidden"
+      >
+        <div className="p-6 border-b border-[#141414] bg-gray-50 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 flex items-center justify-center border border-[#141414] bg-[#141414] text-white">
+              <Box size={20} />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold tracking-tighter uppercase italic leading-none">{part.name}</h2>
+              <p className="text-[10px] font-mono font-bold text-gray-400 uppercase tracking-widest mt-1">{part.sku}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-gray-200 transition-colors border border-[#141414]">
+            <Plus className="rotate-45" size={20} />
+          </button>
+        </div>
+
+        <div className="p-8 space-y-8">
+          <div className="grid grid-cols-2 gap-8">
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Category</p>
+              <p className="text-sm font-bold uppercase">{part.category || 'N/A'}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Unit Price</p>
+              <p className="text-sm font-bold font-mono">${part.unitPrice.toFixed(2)}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Current Stock</p>
+              <p className={`text-2xl font-bold tracking-tighter ${part.quantity <= (part.minQuantity || 0) ? 'text-red-600' : ''}`}>
+                {part.quantity}
+              </p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Min. Threshold</p>
+              <p className="text-sm font-bold">{part.minQuantity || 0} UNITS</p>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Description</p>
+            <div className="p-4 bg-gray-50 border border-[#141414] text-xs font-mono leading-relaxed min-h-[80px]">
+              {part.description || 'NO DESCRIPTION PROVIDED.'}
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center pt-4 border-t border-gray-100">
+            <div className="text-[9px] font-mono text-gray-400 uppercase">
+              Last Updated: {part.updatedAt ? new Date(part.updatedAt).toLocaleString() : 'N/A'}
+            </div>
+            {canEditInventory && (
+              <button 
+                onClick={onEdit}
+                className="px-6 py-2 bg-[#141414] text-white text-[10px] font-bold uppercase tracking-widest hover:bg-gray-800 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,0.2)]"
+              >
+                Edit Details
+              </button>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </div>
   );
 }
 
@@ -3505,27 +5308,76 @@ function PartModal({ part, onClose }: { part: Part | null, onClose: () => void }
     setLoading(true);
     try {
       if (part) {
-        await updateDoc(doc(db, 'parts', part.id), {
-          ...formData,
-          updatedAt: new Date().toISOString()
-        });
+        const { error: partError } = await supabase
+          .from('parts')
+          .update({
+            name: formData.name,
+            sku: formData.sku,
+            description: formData.description,
+            quantity: formData.quantity,
+            min_quantity: formData.minQuantity,
+            unit_price: formData.unitPrice,
+            category: formData.category,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', part.id);
+        
+        if (partError) throw partError;
+        
+        // Trigger low stock notification if needed during update
+        if (formData.quantity <= (formData.minQuantity || 0)) {
+          await supabase.from('notifications').insert({
+            type: 'LOW_STOCK',
+            status: 'SYSTEM',
+            sent_at: new Date().toISOString(),
+            part_id: part.id,
+            part_name: formData.name,
+            message: `LOW STOCK ALERT: ${formData.name} (SKU: ${formData.sku}) is at ${formData.quantity} units. Minimum required: ${formData.minQuantity}.`
+          });
+        }
+
         if (profile) {
           await logAudit(profile.uid, profile.name, 'UPDATE', 'Part', part.id, `Updated part: ${formData.name}`);
         }
         addToast("Part updated successfully", "success");
       } else {
-        const docRef = await addDoc(collection(db, 'parts'), {
-          ...formData,
-          updatedAt: new Date().toISOString()
-        });
+        const { data: newPart, error: partError } = await supabase
+          .from('parts')
+          .insert({
+            name: formData.name,
+            sku: formData.sku,
+            description: formData.description,
+            quantity: formData.quantity,
+            min_quantity: formData.minQuantity,
+            unit_price: formData.unitPrice,
+            category: formData.category,
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+
+        if (partError) throw partError;
+
+        // Trigger low stock notification if needed for new part
+        if (formData.quantity <= (formData.minQuantity || 0)) {
+          await supabase.from('notifications').insert({
+            type: 'LOW_STOCK',
+            status: 'SYSTEM',
+            sent_at: new Date().toISOString(),
+            part_id: newPart.id,
+            part_name: formData.name,
+            message: `LOW STOCK ALERT: ${formData.name} (SKU: ${formData.sku}) is at ${formData.quantity} units. Minimum required: ${formData.minQuantity}.`
+          });
+        }
+
         if (profile) {
-          await logAudit(profile.uid, profile.name, 'CREATE', 'Part', docRef.id, `Created part: ${formData.name}`);
+          await logAudit(profile.uid, profile.name, 'CREATE', 'Part', newPart.id, `Created part: ${formData.name}`);
         }
         addToast("Part added successfully", "success");
       }
       onClose();
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'parts');
+      handleSupabaseError(err, OperationType.WRITE, 'parts');
       addToast("Failed to save part", "error");
     } finally {
       setLoading(false);
@@ -3537,14 +5389,19 @@ function PartModal({ part, onClose }: { part: Part | null, onClose: () => void }
     if (!window.confirm("ARE YOU ABSOLUTELY SURE? THIS CANNOT BE UNDONE.")) return;
     setLoading(true);
     try {
-      await deleteDoc(doc(db, 'parts', part.id));
+      const { error } = await supabase
+        .from('parts')
+        .delete()
+        .eq('id', part.id);
+      
+      if (error) throw error;
       if (profile) {
         await logAudit(profile.uid, profile.name, 'DELETE', 'Part', part.id, `Deleted part: ${part.name}`);
       }
       addToast("Part deleted successfully", "success");
       onClose();
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, 'parts');
+      handleSupabaseError(err, OperationType.DELETE, 'parts');
       addToast("Failed to delete part", "error");
     } finally {
       setLoading(false);
@@ -3677,12 +5534,30 @@ function TicketLogs({ ticketId, ticket, machinery, customer }: { ticketId: strin
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'serviceTickets', ticketId, 'logs'), orderBy('timestamp', 'asc'));
-    getDocs(q)
-      .then(snap => {
-        setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceLog)));
-      })
-      .catch(err => handleFirestoreError(err, OperationType.LIST, `serviceTickets/${ticketId}/logs`));
+    
+    const fetchLogs = async () => {
+      const { data, error } = await supabase
+        .from('service_logs')
+        .select('*')
+        .eq('ticket_id', ticketId)
+        .order('timestamp', { ascending: true });
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'ticket-logs');
+      } else {
+        const mappedLogs = (data as any[]).map(l => ({
+          ...l,
+          ticketId: l.ticket_id,
+          mechanicId: l.mechanic_id,
+          mechanicName: l.mechanic_name,
+          partsReplaced: l.parts_replaced,
+          usedParts: l.used_parts
+        })) as ServiceLog[];
+        setLogs(mappedLogs);
+      }
+    };
+
+    fetchLogs();
   }, [ticketId]);
 
   return (
@@ -3702,7 +5577,7 @@ function TicketLogs({ ticketId, ticket, machinery, customer }: { ticketId: strin
         <div key={log.id} className="pl-4 border-l-2 border-[#141414] py-1">
           <div className="flex justify-between items-center mb-1">
             <span className="text-[9px] font-bold text-gray-400 uppercase">{new Date(log.timestamp).toLocaleString()}</span>
-            <span className="text-[9px] font-mono text-gray-300">MECH: {log.mechanicId.slice(0, 5)}</span>
+            <span className="text-[9px] font-mono text-gray-300">MECH: {log.mechanicId?.slice(0, 5)}</span>
           </div>
           <p className="text-xs">{log.workDone}</p>
           {log.partsReplaced && <p className="text-[10px] text-blue-600 font-bold mt-1 uppercase">Parts: {log.partsReplaced}</p>}
@@ -3710,7 +5585,7 @@ function TicketLogs({ ticketId, ticket, machinery, customer }: { ticketId: strin
             <div className="flex flex-wrap gap-2 mt-1">
               {log.usedParts.map((up, idx) => (
                 <span key={idx} className="text-[9px] font-bold bg-blue-50 text-blue-600 border border-blue-100 px-1.5 py-0.5 uppercase">
-                  {up.partName} x{up.quantity}
+                  {up.partName} <span className="text-blue-400">({up.sku})</span> x{up.quantity}
                 </span>
               ))}
             </div>
@@ -3725,6 +5600,7 @@ function MechanicsView() {
   const { profile, canEditMechanics } = useAuth();
   const { addToast } = useToast();
   const [mechanics, setMechanics] = useState<UserProfile[]>([]);
+  const [tickets, setTickets] = useState<ServiceTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMechanic, setEditingMechanic] = useState<UserProfile | null>(null);
@@ -3732,13 +5608,91 @@ function MechanicsView() {
 
   useEffect(() => {
     if (!profile) return;
-    const q = query(collection(db, 'users'), orderBy('name', 'asc'));
-    const unsub = onSnapshot(q, (snap) => {
-      setMechanics(snap.docs.map(d => ({ uid: d.id, ...d.data() } as UserProfile)));
-      setLoading(false);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'));
-    return unsub;
-  }, []);
+    
+    const fetchMechanics = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .order('name', { ascending: true });
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'users');
+      } else {
+        setMechanics(data.map(d => ({ 
+          uid: d.uid, 
+          name: d.name,
+          email: d.email,
+          role: d.role,
+          createdAt: d.created_at 
+        } as UserProfile)));
+      }
+    };
+
+    const fetchTickets = async () => {
+      const { data, error } = await supabase
+        .from('service_tickets')
+        .select('*');
+      
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, 'service_tickets');
+      } else {
+        const mappedTickets = (data as any[]).map(t => ({
+          ...t,
+          machineryId: t.machinery_id,
+          customerId: t.customer_id,
+          mechanicId: t.mechanic_id,
+          openedAt: t.opened_at,
+          closedAt: t.closed_at,
+          satisfactionScore: t.satisfaction_score
+        })) as ServiceTicket[];
+        setTickets(mappedTickets);
+        setLoading(false);
+      }
+    };
+
+    fetchMechanics();
+    fetchTickets();
+
+    const usersSub = supabase
+      .channel('mechanics_users_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchMechanics())
+      .subscribe();
+
+    const ticketsSub = supabase
+      .channel('mechanics_tickets_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_tickets' }, () => fetchTickets())
+      .subscribe();
+
+    return () => {
+      usersSub.unsubscribe();
+      ticketsSub.unsubscribe();
+    };
+  }, [profile]);
+
+  const getMechanicKPIs = (uid: string) => {
+    const mechTickets = tickets.filter(t => t.mechanicId === uid);
+    const completed = mechTickets.filter(t => t.status === 'Completed');
+    
+    let avgCompletionTime = 0;
+    if (completed.length > 0) {
+      const totalTime = completed.reduce((acc, t) => {
+        if (t.closedAt) {
+          return acc + (new Date(t.closedAt).getTime() - new Date(t.openedAt).getTime());
+        }
+        return acc;
+      }, 0);
+      avgCompletionTime = totalTime / completed.length;
+    }
+
+    const scores = completed.filter(t => t.satisfactionScore !== undefined).map(t => t.satisfactionScore!);
+    const avgSatisfaction = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
+    return {
+      completedCount: completed.length,
+      avgCompletionTime: avgCompletionTime > 0 ? Math.round(avgCompletionTime / (1000 * 60 * 60 * 24)) : null, // in days
+      avgSatisfaction
+    };
+  };
 
   const handleDelete = async (uid: string) => {
     if (uid === profile?.uid) {
@@ -3748,14 +5702,19 @@ function MechanicsView() {
     if (!window.confirm("Are you sure you want to remove this team member?")) return;
 
     try {
-      await deleteDoc(doc(db, 'users', uid));
+      const { error } = await supabase
+        .from('users')
+        .delete()
+        .eq('uid', uid);
+      
+      if (error) throw error;
       if (profile) {
         await logAudit(profile.uid, profile.name, 'DELETE', 'User', uid, 'Removed team member');
       }
       addToast("Team member removed successfully", "success");
     } catch (err) {
       addToast("Failed to remove team member", "error");
-      handleFirestoreError(err, OperationType.DELETE, `users/${uid}`);
+      handleSupabaseError(err, OperationType.DELETE, `users/${uid}`);
     }
   };
 
@@ -3797,9 +5756,32 @@ function MechanicsView() {
                   <span>Joined</span>
                   <span className="font-mono text-[#141414]">{new Date(m.createdAt).toLocaleDateString()}</span>
                 </div>
+                {(() => {
+                  const kpis = getMechanicKPIs(m.uid);
+                  return (
+                    <>
+                      <div className="flex justify-between text-[10px] uppercase tracking-widest text-gray-400">
+                        <span>Completed Tickets</span>
+                        <span className="font-mono text-[#141414]">{kpis.completedCount}</span>
+                      </div>
+                      {kpis.avgCompletionTime !== null && (
+                        <div className="flex justify-between text-[10px] uppercase tracking-widest text-gray-400">
+                          <span>Avg Completion</span>
+                          <span className="font-mono text-[#141414]">{kpis.avgCompletionTime} DAYS</span>
+                        </div>
+                      )}
+                      {kpis.avgSatisfaction !== null && (
+                        <div className="flex justify-between text-[10px] uppercase tracking-widest text-gray-400">
+                          <span>Satisfaction</span>
+                          <span className="font-mono text-[#141414]">{kpis.avgSatisfaction.toFixed(1)} / 5.0</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 <div className="flex justify-between text-[10px] uppercase tracking-widest text-gray-400">
                   <span>ID</span>
-                  <span className="font-mono text-[#141414]">{m.uid.slice(0, 8)}</span>
+                  <span className="font-mono text-[#141414]">{m.uid?.slice(0, 8)}</span>
                 </div>
               </div>
             </div>
@@ -3854,36 +5836,102 @@ function MechanicDetailModal({ mechanic, onClose }: { mechanic: UserProfile, onC
   const [machinery, setMachinery] = useState<Record<string, Machinery>>({});
 
   useEffect(() => {
-    const q = query(collection(db, 'serviceTickets'), where('mechanicId', '==', mechanic.uid));
-    const unsub = onSnapshot(q, async (snap) => {
-      const ticketData = snap.docs.map(d => ({ id: d.id, ...d.data() } as ServiceTicket));
-      setTickets(ticketData);
-      
-      // Fetch unique machinery info
-      const machineIds = [...new Set(ticketData.map(t => t.machineryId))];
-      const machineMap: Record<string, Machinery> = {};
-      
-      await Promise.all(machineIds.map(async (id) => {
-        const d = await getDoc(doc(db, 'machinery', id));
-        if (d.exists()) {
-          machineMap[id] = { id: d.id, ...d.data() } as Machinery;
-        }
-      }));
-      
-      setMachinery(machineMap);
-      setLoading(false);
-    });
-    return unsub;
+    const fetchMechanicData = async () => {
+      try {
+        const { data: ticketData, error: ticketError } = await supabase
+          .from('service_tickets')
+          .select('*')
+          .eq('mechanic_id', mechanic.uid);
+        
+        if (ticketError) throw ticketError;
+
+        const mappedTickets = (ticketData as any[]).map(t => ({
+          ...t,
+          machineryId: t.machinery_id,
+          customerId: t.customer_id,
+          mechanicId: t.mechanic_id,
+          openedAt: t.opened_at,
+          closedAt: t.closed_at,
+          satisfactionScore: t.satisfaction_score
+        })) as ServiceTicket[];
+        
+        setTickets(mappedTickets);
+        
+        // Fetch unique machinery info
+        const machineIds = [...new Set(mappedTickets.map(t => t.machineryId))];
+        const machineMap: Record<string, Machinery> = {};
+        
+        await Promise.all(machineIds.map(async (id) => {
+          const { data: machData, error: machError } = await supabase
+            .from('machinery')
+            .select('*')
+            .eq('id', id)
+            .single();
+          
+          if (!machError && machData) {
+            machineMap[id] = {
+              ...machData,
+              customerId: machData.customer_id,
+              serialNumber: machData.serial_number,
+              purchaseDate: machData.purchase_date,
+              warrantyExpiry: machData.warranty_expiry,
+              lastServiceDate: machData.last_service_date,
+              nextServiceDueDate: machData.next_service_due_date
+            } as Machinery;
+          }
+        }));
+        
+        setMachinery(machineMap);
+      } catch (err) {
+        handleSupabaseError(err, OperationType.LIST, 'mechanic-detail');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchMechanicData();
+
+    const ticketsSub = supabase
+      .channel(`mechanic_tickets_${mechanic.uid}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'service_tickets', filter: `mechanic_id=eq.${mechanic.uid}` }, () => fetchMechanicData())
+      .subscribe();
+
+    return () => {
+      ticketsSub.unsubscribe();
+    };
   }, [mechanic.uid]);
 
   const stats = useMemo(() => {
     const total = tickets.length;
-    const completed = tickets.filter(t => t.status === 'Completed').length;
+    const completed = tickets.filter(t => t.status === 'Completed');
+    const completedCount = completed.length;
     const open = tickets.filter(t => t.status === 'Open').length;
     const inProgress = tickets.filter(t => t.status === 'In Progress').length;
-    const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+    const completionRate = total > 0 ? Math.round((completedCount / total) * 100) : 0;
 
-    return { total, completed, open, inProgress, completionRate };
+    let avgCompletionTime = 0;
+    if (completedCount > 0) {
+      const totalTime = completed.reduce((acc, t) => {
+        if (t.closedAt) {
+          return acc + (new Date(t.closedAt).getTime() - new Date(t.openedAt).getTime());
+        }
+        return acc;
+      }, 0);
+      avgCompletionTime = totalTime / completedCount;
+    }
+
+    const scores = completed.filter(t => t.satisfactionScore !== undefined).map(t => t.satisfactionScore!);
+    const avgSatisfaction = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
+    return { 
+      total, 
+      completed: completedCount, 
+      open, 
+      inProgress, 
+      completionRate,
+      avgCompletionTime: avgCompletionTime > 0 ? (avgCompletionTime / (1000 * 60 * 60 * 24)).toFixed(1) : null,
+      avgSatisfaction: avgSatisfaction !== null ? avgSatisfaction.toFixed(1) : null
+    };
   }, [tickets]);
 
   return (
@@ -3914,7 +5962,7 @@ function MechanicDetailModal({ mechanic, onClose }: { mechanic: UserProfile, onC
           ) : (
             <div className="space-y-8">
               {/* Stats Grid */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
                 <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
                   <p className="text-[10px] font-bold text-gray-400 uppercase mb-1">Total Assigned</p>
                   <p className="text-2xl font-bold">{stats.total}</p>
@@ -3930,6 +5978,14 @@ function MechanicDetailModal({ mechanic, onClose }: { mechanic: UserProfile, onC
                 <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
                   <p className="text-[10px] font-bold text-blue-600 uppercase mb-1">Completion Rate</p>
                   <p className="text-2xl font-bold">{stats.completionRate}%</p>
+                </div>
+                <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+                  <p className="text-[10px] font-bold text-amber-600 uppercase mb-1">Avg Completion</p>
+                  <p className="text-2xl font-bold">{stats.avgCompletionTime || 'N/A'}<span className="text-[10px] ml-1">DAYS</span></p>
+                </div>
+                <div className="bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+                  <p className="text-[10px] font-bold text-purple-600 uppercase mb-1">Satisfaction</p>
+                  <p className="text-2xl font-bold">{stats.avgSatisfaction || 'N/A'}<span className="text-[10px] ml-1">/ 5.0</span></p>
                 </div>
               </div>
 
@@ -3990,7 +6046,17 @@ function MechanicModal({ mechanic, onClose }: { mechanic: UserProfile | null, on
     try {
       if (mechanic) {
         // Update
-        await updateDoc(doc(db, 'users', mechanic.uid), formData);
+        const { error } = await supabase
+          .from('users')
+          .update({
+            name: formData.name,
+            email: formData.email,
+            role: formData.role
+          })
+          .eq('uid', mechanic.uid);
+        
+        if (error) throw error;
+
         if (profile) {
           await logAudit(profile.uid, profile.name, 'UPDATE', 'User', mechanic.uid, `Updated team member: ${formData.name} (${formData.role})`);
         }
@@ -3998,12 +6064,18 @@ function MechanicModal({ mechanic, onClose }: { mechanic: UserProfile | null, on
       } else {
         // Create (Pre-initialize profile)
         const uid = `invited_${Math.random().toString(36).slice(2, 11)}`;
-        const newProfile: UserProfile = {
-          uid,
-          ...formData,
-          createdAt: new Date().toISOString()
+        const newProfile = {
+          uid: uid,
+          name: formData.name,
+          email: formData.email,
+          role: formData.role,
+          created_at: new Date().toISOString()
         };
-        await setDoc(doc(db, 'users', uid), newProfile);
+        const { error } = await supabase
+          .from('users')
+          .insert(newProfile);
+        
+        if (error) throw error;
         if (profile) {
           await logAudit(profile.uid, profile.name, 'CREATE', 'User', uid, `Added new team member: ${formData.name} (${formData.role})`);
         }
@@ -4012,7 +6084,7 @@ function MechanicModal({ mechanic, onClose }: { mechanic: UserProfile | null, on
       onClose();
     } catch (err) {
       addToast("Failed to save team member", "error");
-      handleFirestoreError(err, mechanic ? OperationType.UPDATE : OperationType.CREATE, 'users');
+      handleSupabaseError(err, mechanic ? OperationType.UPDATE : OperationType.CREATE, 'users');
     } finally {
       setLoading(false);
     }

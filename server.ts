@@ -2,45 +2,26 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
-import admin from "firebase-admin";
-import { getFirestore } from "firebase-admin/firestore";
+import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
-import fs from "fs";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize Firebase Admin
-const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-let db: any;
+// Initialize Supabase Client for Server-side
+// Use Service Role Key if available to bypass RLS for background jobs
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
-try {
-  const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  console.log("Firebase Config loaded:", JSON.stringify(firebaseConfig, null, 2));
-  
-  // Initialize with project ID and explicit ADC
-  if (admin.apps.length === 0) {
-    admin.initializeApp({ 
-      projectId: firebaseConfig.projectId,
-      credential: admin.credential.applicationDefault()
-    });
-  }
-
-  const dbId = firebaseConfig.firestoreDatabaseId || '(default)';
-  console.log(`Initializing Firestore with Project: ${firebaseConfig.projectId}, Database: ${dbId}`);
-  db = admin.firestore(dbId);
-  
-  // Test connection
-  db.collection('machinery').limit(1).get()
-    .then(() => console.log("Firestore connection test successful."))
-    .catch((err: any) => console.error("Firestore connection test failed:", err.message));
-  
-  console.log(`Firebase Admin initialized successfully.`);
-} catch (error) {
-  console.error("Failed to initialize Firebase Admin:", error);
+if (!supabaseUrl) {
+  console.error("CRITICAL: SUPABASE_URL is missing from environment variables.");
 }
+
+// Prefer service key for server-side operations to bypass RLS
+const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey);
 
 async function startServer() {
   console.log("Starting server...");
@@ -52,9 +33,6 @@ async function startServer() {
 
   // API Route to manually trigger the check (for testing)
   app.post("/api/admin/check-service-due", async (req, res) => {
-    if (!db) {
-      return res.status(500).json({ success: false, error: "Firebase not initialized" });
-    }
     try {
       const results = await checkAndNotifyServiceDue();
       res.json({ success: true, processed: results.length, details: results });
@@ -97,69 +75,45 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server running on http://localhost:${PORT}`);
     
-    if (db) {
-      // Test Firestore connection
-      try {
-        console.log("Testing Firestore connection...");
-        const testSnap = await db.collection('machinery').limit(1).get();
-        console.log("Firestore connection test successful. Collections accessible.");
-      } catch (error) {
-        console.error("Firestore connection test failed:", error);
+  // Test Supabase connection
+  try {
+    console.log("Testing Supabase connection...");
+    console.log("Supabase URL:", supabaseUrl ? `${supabaseUrl.substring(0, 15)}...` : "MISSING");
+    console.log("Supabase Service Key present:", !!supabaseServiceKey);
+    console.log("Supabase Anon Key present:", !!supabaseAnonKey);
+    
+    if (!supabaseUrl || (!supabaseServiceKey && !supabaseAnonKey)) {
+      console.error("Supabase configuration is incomplete. Background jobs will fail.");
+    } else {
+      const { data, error } = await supabase.from('machinery').select('id').limit(1);
+      if (error) {
+        console.error("Supabase connection test failed!");
+        console.error("Error Code:", error.code);
+        console.error("Error Message:", error.message);
+        console.error("Error Details:", error.details);
+        console.error("Full Error Object:", JSON.stringify(error, null, 2));
+      } else {
+        console.log("Supabase connection test successful. Tables accessible.");
       }
-
-      // Start the background job
-      // Check every 24 hours
-      setInterval(() => {
-        checkAndNotifyServiceDue().catch(err => console.error("Interval background job failed:", err));
-      }, 24 * 60 * 60 * 1000);
-      
-      // Also run once on startup (optional, but good for demo)
-      setTimeout(() => {
-        checkAndNotifyServiceDue().catch(err => console.error("Initial background job failed:", err));
-      }, 5000);
     }
+  } catch (error) {
+    console.error("Supabase connection test threw exception:", error);
+  }
+
+    // Start the background job
+    // Check every 24 hours
+    setInterval(() => {
+      checkAndNotifyServiceDue().catch(err => console.error("Interval background job failed:", err));
+    }, 24 * 60 * 60 * 1000);
+    
+    // Also run once on startup (optional, but good for demo)
+    setTimeout(() => {
+      checkAndNotifyServiceDue().catch(err => console.error("Initial background job failed:", err));
+    }, 5000);
   });
 }
 
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string;
-    email?: string;
-    emailVerified?: boolean;
-    isAnonymous?: boolean;
-    tenantId?: string;
-    providerInfo?: any[];
-  }
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      // For Admin SDK, we don't have a current user in the same way as Client SDK
-      userId: "ADMIN_SDK",
-    },
-    operationType,
-    path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo, null, 2));
-  // We don't throw here to prevent crashing the background job, but we log it clearly
-}
-
 async function checkAndNotifyServiceDue() {
-  if (!db) return [];
   console.log("Running background job: Checking for machinery nearing service due date...");
   
   const now = new Date();
@@ -170,44 +124,53 @@ async function checkAndNotifyServiceDue() {
   const nextWeekStr = sevenDaysFromNow.toISOString().split('T')[0];
 
   try {
-    console.log(`Querying machinery in database: ${db._databaseId || 'default'}`);
-    // Query machinery where nextServiceDueDate is between today and next week
-    let machinerySnap;
-    try {
-      machinerySnap = await db.collection('machinery')
-        .where('nextServiceDueDate', '>=', todayStr)
-        .where('nextServiceDueDate', '<=', nextWeekStr)
-        .get();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'machinery');
+    // Query machinery where next_service_due_date is between today and next week
+    const { data: machinery, error: machineError } = await supabase
+      .from('machinery')
+      .select('id, customer_id, next_service_due_date, model')
+      .gte('next_service_due_date', todayStr)
+      .lte('next_service_due_date', nextWeekStr);
+
+    if (machineError) {
+      console.error("Supabase Error [LIST] on table [machinery]!");
+      console.error("Error Code:", machineError.code);
+      console.error("Error Message:", machineError.message);
+      console.error("Error Details:", machineError.details);
+      console.error("Full Error Object:", JSON.stringify(machineError, null, 2));
       return [];
     }
 
-    console.log(`Query successful. Found ${machinerySnap.size} machines.`);
+    console.log(`Query successful. Found ${machinery?.length || 0} machines.`);
 
-    if (machinerySnap.empty) {
+    if (!machinery || machinery.length === 0) {
       console.log("No machinery nearing service due date.");
       return [];
     }
 
     const results = [];
-    for (const doc of machinerySnap.docs) {
-      const machine = doc.data();
-      const customerId = machine.customerId;
+    for (const machine of machinery) {
+      const customerId = machine.customer_id;
       
       // Get customer details
-      let customerDoc;
-      try {
-        customerDoc = await db.collection('customers').doc(customerId).get();
-      } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `customers/${customerId}`);
+      const { data: customer, error: customerError } = await supabase
+        .from('customers')
+        .select('name')
+        .eq('id', customerId)
+        .single();
+
+      if (customerError) {
+        console.error(`Supabase Error [GET] on table [customers] for id [${customerId}]:`, JSON.stringify(customerError, null, 2));
         continue;
       }
 
-      if (!customerDoc.exists) continue;
+      if (!customer) continue;
       
-      const customer = customerDoc.data();
-      results.push({ machineId: doc.id, customerName: customer.name, dueDate: machine.nextServiceDueDate });
+      results.push({ 
+        machineId: machine.id, 
+        customerName: customer.name, 
+        dueDate: machine.next_service_due_date,
+        model: machine.model
+      });
     }
     
     return results;
