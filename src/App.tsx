@@ -4,11 +4,10 @@ import {
   OperationType, handleSupabaseError, logAudit
 } from './supabase';
 import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification, Part, UsedPart } from './types';
-import { GoogleGenAI, Type } from "@google/genai";
 import { 
   LayoutDashboard, Users, Construction, Ticket, History, LogOut, Search, Plus, Trash2, Bell,
   CheckCircle2, AlertCircle, Clock, ChevronRight, Settings, Wrench, Phone, Mail, MapPin, Calendar, User as UserIcon, Filter, FileText, Download, BarChart3,
-  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge, Sparkles, BrainCircuit
+  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
@@ -1272,7 +1271,14 @@ function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: (
 
 function Dashboard() {
   const { profile } = useAuth();
-  const [stats, setStats] = useState({ due: 0, active: 0, completed: 0, lowStock: 0 });
+  const [stats, setStats] = useState({ 
+    due: 0, 
+    active: 0, 
+    completed: 0, 
+    lowStock: 0,
+    underRepair: 0,
+    recentlyServiced: 0
+  });
   const [dueMachinery, setDueMachinery] = useState<Machinery[]>([]);
   const [activeTickets, setActiveTickets] = useState<ServiceTicket[]>([]);
   const [lowStockParts, setLowStockParts] = useState<Part[]>([]);
@@ -1281,16 +1287,15 @@ function Dashboard() {
     if (!profile) return;
     
     const fetchDashboardData = async () => {
-      // Fetch machinery due for service
-      const { data: dueData, error: dueError } = await supabase
+      // Fetch all machinery to calculate multiple stats
+      const { data: machData, error: machError } = await supabase
         .from('machinery')
-        .select('*')
-        .eq('status', 'Due for Service');
+        .select('*');
       
-      if (dueError) {
-        handleSupabaseError(dueError, OperationType.LIST, 'machinery');
+      if (machError) {
+        handleSupabaseError(machError, OperationType.LIST, 'machinery');
       } else {
-        const mappedDue = (dueData as any[]).map(m => ({
+        const mappedMach = (machData as any[]).map(m => ({
           ...m,
           customerId: m.customer_id,
           serialNumber: m.serial_number,
@@ -1299,8 +1304,26 @@ function Dashboard() {
           lastServiceDate: m.last_service_date,
           nextServiceDueDate: m.next_service_due_date
         })) as Machinery[];
-        setDueMachinery(mappedDue);
-        setStats(prev => ({ ...prev, due: dueData.length }));
+
+        const dueCount = mappedMach.filter(m => m.status === 'Due for Service').length;
+        const underRepairCount = mappedMach.filter(m => m.status === 'Under Repair').length;
+        
+        // Recently Serviced: last 30 days
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const recentlyServicedCount = mappedMach.filter(m => {
+          if (!m.lastServiceDate) return false;
+          const lastService = new Date(m.lastServiceDate);
+          return lastService >= thirtyDaysAgo;
+        }).length;
+
+        setDueMachinery(mappedMach.filter(m => m.status === 'Due for Service'));
+        setStats(prev => ({ 
+          ...prev, 
+          due: dueCount,
+          underRepair: underRepairCount,
+          recentlyServiced: recentlyServicedCount
+        }));
       }
 
       // Fetch active tickets
@@ -1377,11 +1400,12 @@ function Dashboard() {
       className="space-y-8"
     >
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6">
         <StatCard label="DUE FOR SERVICE" value={stats.due} icon={<AlertCircle className="text-red-600" />} color="bg-red-50" />
+        <StatCard label="UNDER REPAIR" value={stats.underRepair} icon={<Wrench className="text-orange-600" />} color="bg-orange-50" />
+        <StatCard label="RECENTLY SERVICED" value={stats.recentlyServiced} icon={<CheckCircle2 className="text-green-600" />} color="bg-green-50" />
         <StatCard label="ACTIVE TICKETS" value={stats.active} icon={<Clock className="text-blue-600" />} color="bg-blue-50" />
         <StatCard label="LOW STOCK PARTS" value={stats.lowStock} icon={<Box className="text-amber-600" />} color="bg-amber-50" />
-        <StatCard label="COMPLETED TODAY" value={0} icon={<CheckCircle2 className="text-green-600" />} color="bg-green-50" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -1445,9 +1469,6 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* AI Predictive Maintenance */}
-        <PredictiveMaintenance />
-
         {/* Low Stock Alerts */}
         <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] lg:col-span-2">
           <div className="p-4 border-b border-[#141414] flex justify-between items-center bg-amber-50">
@@ -1486,218 +1507,6 @@ function StatCard({ label, value, icon, color }: { label: string, value: number,
         {icon}
       </div>
       <p className="text-4xl font-bold tracking-tighter">{value}</p>
-    </div>
-  );
-}
-
-interface Prediction {
-  machineryId: string;
-  model: string;
-  prediction: string;
-  confidenceScore: number;
-  recommendedActions: string[];
-  estimatedServiceDate: string;
-}
-
-function PredictiveMaintenance() {
-  const { profile } = useAuth();
-  const [predictions, setPredictions] = useState<Prediction[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const generatePredictions = async () => {
-    if (!profile) return;
-    setLoading(true);
-    setError(null);
-
-    try {
-      // Fetch all machinery and their recent history
-      const { data: machinery, error: mError } = await supabase
-        .from('machinery')
-        .select('*');
-      
-      if (mError) throw mError;
-
-      const mappedMachinery = (machinery as any[]).map(m => ({
-        ...m,
-        customerId: m.customer_id,
-        serialNumber: m.serial_number,
-        purchaseDate: m.purchase_date,
-        warrantyExpiry: m.warranty_expiry,
-        lastServiceDate: m.last_service_date,
-        nextServiceDueDate: m.next_service_due_date
-      })) as Machinery[];
-
-      const { data: tickets, error: tError } = await supabase
-        .from('service_tickets')
-        .select('*')
-        .order('opened_at', { ascending: false })
-        .limit(50);
-      
-      if (tError) throw tError;
-
-      const mappedTickets = (tickets as any[]).map(t => ({
-        ...t,
-        machineryId: t.machinery_id,
-        customerId: t.customer_id,
-        mechanicId: t.mechanic_id,
-        openedAt: t.opened_at,
-        closedAt: t.closed_at,
-        satisfactionScore: t.satisfaction_score
-      })) as ServiceTicket[];
-
-      const dataForAI = mappedMachinery.map(m => {
-        const mTickets = mappedTickets.filter(t => t.machineryId === m.id);
-        return {
-          id: m.id,
-          model: m.model,
-          type: m.type,
-          status: m.status,
-          warrantyExpiry: m.warrantyExpiry,
-          lastServiceDate: m.lastServiceDate,
-          nextServiceDueDate: m.nextServiceDueDate,
-          recentTickets: mTickets.map(t => ({
-            description: t.description,
-            status: t.status,
-            openedAt: t.openedAt,
-            closedAt: t.closedAt
-          }))
-        };
-      });
-
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Analyze the following machinery data and predict which units are likely to require service within the next month. 
-        Consider the last service date, warranty expiry, and recent service history.
-        
-        Machinery Data:
-        ${JSON.stringify(dataForAI, null, 2)}
-        
-        Current Date: ${new Date().toISOString()}
-        
-        Provide predictions for the top 3-5 most critical units.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                machineryId: { type: Type.STRING },
-                model: { type: Type.STRING },
-                prediction: { type: Type.STRING },
-                confidenceScore: { type: Type.NUMBER },
-                recommendedActions: { 
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING }
-                },
-                estimatedServiceDate: { type: Type.STRING }
-              },
-              required: ["machineryId", "model", "prediction", "confidenceScore", "recommendedActions", "estimatedServiceDate"]
-            }
-          }
-        }
-      });
-
-      const result = JSON.parse(response.text || "[]");
-      setPredictions(result);
-    } catch (err) {
-      console.error("AI Prediction error:", err);
-      setError("Failed to generate AI predictions. Please try again later.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    generatePredictions();
-  }, [profile]);
-
-  return (
-    <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] lg:col-span-2">
-      <div className="p-4 border-b border-[#141414] flex justify-between items-center bg-[#141414] text-white">
-        <div className="flex items-center gap-2">
-          <BrainCircuit size={18} className="text-blue-400" />
-          <h3 className="font-bold text-xs tracking-widest uppercase italic">AI Predictive Maintenance</h3>
-        </div>
-        <button 
-          onClick={generatePredictions}
-          disabled={loading}
-          className="p-1 hover:bg-gray-800 transition-colors disabled:opacity-50"
-          title="Refresh Predictions"
-        >
-          <RotateCw size={14} className={loading ? 'animate-spin' : ''} />
-        </button>
-      </div>
-      
-      <div className="p-6">
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-12 space-y-4">
-            <div className="relative">
-              <Sparkles size={32} className="text-blue-500 animate-pulse" />
-              <BrainCircuit size={24} className="absolute -bottom-2 -right-2 text-gray-400 animate-bounce" />
-            </div>
-            <p className="text-[10px] font-mono text-gray-400 uppercase tracking-widest animate-pulse">Analyzing historical data & current status...</p>
-          </div>
-        ) : error ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <AlertCircle size={32} className="text-red-500 mb-4" />
-            <p className="text-xs font-bold text-red-600 uppercase mb-2">{error}</p>
-            <button 
-              onClick={generatePredictions}
-              className="text-[10px] font-bold underline uppercase tracking-widest hover:text-red-800"
-            >
-              Try Again
-            </button>
-          </div>
-        ) : predictions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <CheckCircle2 size={32} className="text-green-500 mb-4" />
-            <p className="text-xs font-bold text-gray-400 uppercase italic">All machinery appears to be in optimal condition for the next 30 days.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {predictions.map((p, idx) => (
-              <div key={idx} className="border border-[#141414] p-4 bg-gray-50 relative overflow-hidden group">
-                <div className="absolute top-0 right-0 p-2">
-                  <div className="flex items-center gap-1 bg-white border border-[#141414] px-2 py-1">
-                    <Gauge size={12} className={p.confidenceScore > 80 ? 'text-red-600' : 'text-amber-600'} />
-                    <span className="text-[10px] font-bold font-mono">{p.confidenceScore}%</span>
-                  </div>
-                </div>
-                
-                <div className="mb-4">
-                  <h4 className="text-sm font-bold uppercase mb-1">{p.model}</h4>
-                  <p className="text-[10px] font-mono text-gray-400 uppercase">Est. Service: {new Date(p.estimatedServiceDate).toLocaleDateString()}</p>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="bg-white p-3 border border-[#141414] border-dashed">
-                    <p className="text-[11px] leading-relaxed italic text-gray-600">"{p.prediction}"</p>
-                  </div>
-
-                  <div>
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 mb-2">Recommended Actions:</p>
-                    <ul className="space-y-1">
-                      {p.recommendedActions.map((action, i) => (
-                        <li key={i} className="flex items-start gap-2 text-[10px]">
-                          <div className="mt-1 w-1 h-1 bg-[#141414] rounded-full shrink-0" />
-                          <span>{action}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="p-3 bg-gray-50 border-t border-[#141414] flex items-center gap-2">
-        <Sparkles size={12} className="text-blue-500" />
-        <p className="text-[8px] font-mono text-gray-400 uppercase">AI-generated predictions based on historical service patterns and current operational status.</p>
-      </div>
     </div>
   );
 }
