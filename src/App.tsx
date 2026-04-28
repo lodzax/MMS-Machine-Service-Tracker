@@ -1,4 +1,4 @@
-import React, { useState, useEffect, createContext, useContext, useMemo } from 'react';
+import React, { useState, useEffect, createContext, useContext, useMemo, useCallback } from 'react';
 import { 
   supabase, signIn, signUp, logout, onAuthStateChanged,
   OperationType, handleSupabaseError, logAudit
@@ -1272,8 +1272,53 @@ function MapView() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [geocodingProgress, setGeocodingProgress] = useState({ current: 0, total: 0 });
+  const [statusFilter, setStatusFilter] = useState<MachineryStatus | 'All'>('All');
 
   const fetchIdRef = React.useRef(0);
+
+  const getStatusPriority = (status: MachineryStatus): number => {
+    switch (status) {
+      case 'Under Repair': return 3;
+      case 'Due for Service': return 2;
+      case 'Operational': return 1;
+      default: return 0;
+    }
+  };
+
+  const getLocationStatus = (machines: Machinery[]): MachineryStatus => {
+    if (machines.length === 0) return 'Operational';
+    let highestPriority = 0;
+    let dominantStatus: MachineryStatus = 'Operational';
+
+    machines.forEach(m => {
+      const p = getStatusPriority(m.status);
+      if (p > highestPriority) {
+        highestPriority = p;
+        dominantStatus = m.status;
+      }
+    });
+
+    return dominantStatus;
+  };
+
+  const getStatusColor = (status: MachineryStatus): string => {
+    switch (status) {
+      case 'Under Repair': return '#ef4444'; // Red
+      case 'Due for Service': return '#eab308'; // Yellow
+      case 'Operational': return '#22c55e'; // Green
+      default: return '#141414';
+    }
+  };
+
+  const createColoredIcon = (status: MachineryStatus) => {
+    const color = getStatusColor(status);
+    return L.divIcon({
+      className: 'custom-div-icon',
+      html: `<div style="background-color: ${color}; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.4);"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7]
+    });
+  };
 
   const fetchData = async () => {
     const currentFetchId = ++fetchIdRef.current;
@@ -1409,11 +1454,16 @@ function MapView() {
     });
   }, []);
 
+  const filteredLocations = useMemo(() => {
+    if (statusFilter === 'All') return customerLocations;
+    return customerLocations.filter(loc => getLocationStatus(loc.machines) === statusFilter);
+  }, [customerLocations, statusFilter]);
+
   const center: [number, number] = useMemo(() => {
-    if (customerLocations.length === 0) return [0, 0];
-    const sum = customerLocations.reduce((acc, loc) => [acc[0] + loc.position[0], acc[1] + loc.position[1]], [0, 0]);
-    return [sum[0] / customerLocations.length, sum[1] / customerLocations.length];
-  }, [customerLocations]);
+    if (filteredLocations.length === 0) return [0, 0];
+    const sum = filteredLocations.reduce((acc, loc) => [acc[0] + loc.position[0], acc[1] + loc.position[1]], [0, 0]);
+    return [sum[0] / filteredLocations.length, sum[1] / filteredLocations.length];
+  }, [customerLocations, statusFilter]);
 
   if (loading && customerLocations.length === 0) return <div className="flex flex-col items-center justify-center p-12 gap-4">
     <LoadingSpinner />
@@ -1436,64 +1486,102 @@ function MapView() {
             )}
           </div>
           <div className="flex items-center gap-4">
-             <div className="flex items-center gap-6 text-[10px] font-mono font-bold">
-               <div className="flex items-center gap-1">
-                 <div className="w-2 h-2 bg-green-500 rounded-full" />
-                 <span>ACTIVE CLIENTS</span>
+             <div className="flex items-center gap-3">
+               <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest font-mono">Filter Status:</span>
+               <div className="flex bg-white border border-[#141414] p-0.5">
+                 {(['All', 'Operational', 'Due for Service', 'Under Repair'] as const).map(f => (
+                   <button 
+                     key={f}
+                     onClick={() => setStatusFilter(f)}
+                     className={`px-2 py-1 text-[9px] font-bold uppercase transition-all ${
+                       statusFilter === f 
+                        ? 'bg-[#141414] text-white' 
+                        : 'text-gray-400 hover:text-[#141414]'
+                     }`}
+                   >
+                     {f}
+                   </button>
+                 ))}
                </div>
              </div>
-             <button onClick={fetchData} className="p-1 hover:bg-gray-200 transition-colors">
+             
+             <div className="h-4 w-px bg-gray-200 mx-2" />
+
+             <div className="flex items-center gap-6 text-[10px] font-mono font-bold">
+               <div className="flex items-center gap-3">
+                 <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 bg-green-500 rounded-full" />
+                    <span>OPERATIONAL</span>
+                 </div>
+                 <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 bg-yellow-500 rounded-full" />
+                    <span>DUE SERVICE</span>
+                 </div>
+                 <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 bg-red-500 rounded-full" />
+                    <span>UNDER REPAIR</span>
+                 </div>
+               </div>
+             </div>
+             <button onClick={fetchData} className="p-1 hover:bg-gray-200 transition-colors border border-[#141414]">
                <RotateCw size={14} className={refreshing ? 'animate-spin' : ''} />
              </button>
              <MapPin size={16} className="text-gray-400" />
           </div>
         </div>
         <div className="flex-1 relative overflow-hidden">
-          <MapContainer center={center[0] !== 0 ? center : [0, 0]} zoom={customerLocations.length > 0 ? 5 : 2} scrollWheelZoom={true} style={{ height: '100%', width: '100%' }}>
+          <MapContainer center={center[0] !== 0 ? center : [0, 0]} zoom={filteredLocations.length > 0 ? 5 : 2} scrollWheelZoom={true} style={{ height: '100%', width: '100%' }}>
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
             {center[0] !== 0 && <RecenterMap position={center} />}
-            {customerLocations.map((loc) => (
-              <Marker key={loc.id} position={loc.position}>
-                <Popup>
-                  <div className="p-2 min-w-[250px]">
-                    <div className="flex items-center justify-between mb-2">
-                       <h4 className="font-bold text-sm uppercase tracking-tight m-0">{loc.name}</h4>
-                       <span className="text-[10px] font-mono bg-[#141414] text-white px-2 py-0.5">{loc.machines.length} UNITS</span>
-                    </div>
-                    <p className="text-[10px] uppercase text-gray-500 font-mono leading-tight mb-3 italic">{loc.address}</p>
-                    
-                    <div className="border-t border-[#141414] pt-2 mt-2 space-y-2 max-h-40 overflow-y-auto">
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400">MACHINERY AT THIS LOCATION:</p>
-                      {loc.machines.length === 0 ? (
-                        <p className="text-[10px] italic text-gray-400">No machinery registered</p>
-                      ) : (
-                        loc.machines.map(m => (
-                          <div key={m.id} className="flex items-center justify-between p-2 bg-gray-50 border border-gray-200">
-                            <div className="flex items-center gap-2">
-                              {getMachineryIcon(m.type, 12)}
-                              <span className="text-[10px] font-bold">{m.model}</span>
+            {filteredLocations.map((loc) => {
+              const dominantStatus = getLocationStatus(loc.machines);
+              return (
+                <Marker 
+                  key={loc.id} 
+                  position={loc.position}
+                  icon={createColoredIcon(dominantStatus)}
+                >
+                  <Popup>
+                    <div className="p-2 min-w-[250px]">
+                      <div className="flex items-center justify-between mb-2">
+                         <h4 className="font-bold text-sm uppercase tracking-tight m-0">{loc.name}</h4>
+                         <span className="text-[10px] font-mono bg-[#141414] text-white px-2 py-0.5">{loc.machines.length} UNITS</span>
+                      </div>
+                      <p className="text-[10px] uppercase text-gray-500 font-mono leading-tight mb-3 italic">{loc.address}</p>
+                      
+                      <div className="border-t border-[#141414] pt-2 mt-2 space-y-2 max-h-40 overflow-y-auto">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400">MACHINERY AT THIS LOCATION:</p>
+                        {loc.machines.length === 0 ? (
+                          <p className="text-[10px] italic text-gray-400">No machinery registered</p>
+                        ) : (
+                          loc.machines.map(m => (
+                            <div key={m.id} className="flex items-center justify-between p-2 bg-gray-50 border border-gray-200">
+                              <div className="flex items-center gap-2">
+                                {getMachineryIcon(m.type, 12)}
+                                <span className="text-[10px] font-bold">{m.model}</span>
+                              </div>
+                              <span className={`text-[8px] font-bold uppercase ${
+                                m.status === 'Operational' ? 'text-green-600' : 
+                                m.status === 'Due for Service' ? 'text-yellow-600' : 'text-red-600'
+                              }`}>{m.status}</span>
                             </div>
-                            <span className={`text-[8px] font-bold uppercase ${
-                              m.status === 'Operational' ? 'text-green-600' : 
-                              m.status === 'Due for Service' ? 'text-red-600' : 'text-amber-600'
-                            }`}>{m.status}</span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                    
-                    <div className="mt-4 flex gap-2">
-                      <div className="flex-1 text-[9px] text-gray-400 font-mono">
-                        <Phone size={8} className="inline mr-1" /> {loc.phone}
+                          ))
+                        )}
+                      </div>
+                      
+                      <div className="mt-4 flex gap-2">
+                        <div className="flex-1 text-[9px] text-gray-400 font-mono text-right">
+                          <Phone size={8} className="inline mr-1" /> {loc.phone}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
+                  </Popup>
+                </Marker>
+              );
+            })}
           </MapContainer>
         </div>
       </div>
@@ -1781,29 +1869,28 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
     }
   }, [initialCustomerId, customers]);
 
-  useEffect(() => {
+  const fetchCustomers = useCallback(async () => {
     if (!profile) return;
+    const { data, error } = await supabase
+      .from('customers')
+      .select('*')
+      .order('name');
     
-    const fetchCustomers = async () => {
-      const { data, error } = await supabase
-        .from('customers')
-        .select('*')
-        .order('name');
-      
-      if (error) {
-        handleSupabaseError(error, OperationType.LIST, 'customers');
-      } else {
-        const mappedCustomers = (data as any[]).map(c => ({
-          ...c,
-          invoiceDate: c.invoice_date,
-          invoiceNumber: c.invoice_number,
-          invoiceAmount: c.invoice_amount,
-          createdAt: c.created_at
-        })) as Customer[];
-        setCustomers(mappedCustomers);
-      }
-    };
+    if (error) {
+      handleSupabaseError(error, OperationType.LIST, 'customers');
+    } else {
+      const mappedCustomers = (data as any[]).map(c => ({
+        ...c,
+        invoiceDate: c.invoice_date,
+        invoiceNumber: c.invoice_number,
+        invoiceAmount: c.invoice_amount,
+        createdAt: c.created_at
+      })) as Customer[];
+      setCustomers(mappedCustomers);
+    }
+  }, [profile]);
 
+  useEffect(() => {
     fetchCustomers();
 
     const subscription = supabase
@@ -1814,7 +1901,7 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [fetchCustomers]);
 
   const filtered = customers.filter(c => 
     c.name.toLowerCase().includes(search.toLowerCase()) || 
@@ -1890,7 +1977,7 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
         </table>
       </div>
 
-      {isAdding && <AddCustomerModal onClose={() => setIsAdding(false)} />}
+      {isAdding && <AddCustomerModal onClose={() => setIsAdding(false)} onSuccess={fetchCustomers} />}
       {selectedCustomer && (
         <CustomerDetailModal 
           customer={selectedCustomer} 
@@ -1904,7 +1991,7 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
   );
 }
 
-function AddCustomerModal({ onClose }: { onClose: () => void }) {
+function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSuccess?: () => void }) {
   const { profile } = useAuth();
   const { addToast } = useToast();
   const [formData, setFormData] = useState({ 
@@ -2002,6 +2089,7 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
       }
 
       addToast(`Customer ${formData.name} and ${machineryList.filter(m => m.model && m.serialNumber).length} machinery items registered successfully`, "success");
+      onSuccess?.();
       onClose();
     } catch (err) {
       addToast("Failed to register customer", "error");
