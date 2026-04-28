@@ -14,6 +14,8 @@ export interface Customer {
   email?: string;
   phone: string;
   address?: string;
+  latitude?: number;
+  longitude?: number;
   invoiceDate?: string;
   invoiceNumber?: string;
   invoiceAmount?: number;

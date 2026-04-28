@@ -12,6 +12,8 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet';
 
 // --- Contexts ---
 type ToastType = 'success' | 'error' | 'info';
@@ -518,6 +520,7 @@ function AppLayout({
         </div>
         <nav className="flex-1 p-4 space-y-2">
           <NavItem active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard size={18} />} label="DASHBOARD" />
+          <NavItem active={activeTab === 'map'} onClick={() => setActiveTab('map')} icon={<MapPin size={18} />} label="MAP VIEW" />
           <NavItem active={activeTab === 'customers'} onClick={() => setActiveTab('customers')} icon={<Users size={18} />} label="CUSTOMERS" />
           <NavItem active={activeTab === 'machinery'} onClick={() => setActiveTab('machinery')} icon={<Construction size={18} />} label="MACHINERY" />
           <NavItem active={activeTab === 'tickets'} onClick={() => setActiveTab('tickets')} icon={<Ticket size={18} />} label="SERVICE TICKETS" />
@@ -568,6 +571,7 @@ function AppLayout({
         <div className="p-8">
           <AnimatePresence mode="wait">
             {activeTab === 'dashboard' && <Dashboard key="dashboard" />}
+            {activeTab === 'map' && <MapView key="map" />}
             {activeTab === 'customers' && (
               <CustomersView 
                 key="customers" 
@@ -1251,6 +1255,256 @@ function ReportsView() {
   );
 }
 
+function RecenterMap({ position, zoom }: { position: [number, number], zoom?: number }) {
+  const map = useMap();
+  useEffect(() => {
+    if (position[0] !== 0 || position[1] !== 0) {
+      map.setView(position, zoom || map.getZoom());
+    }
+  }, [position, zoom]);
+  return null;
+}
+
+function MapView() {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [customerLocations, setCustomerLocations] = useState<(Customer & { position: [number, number], machines: Machinery[] })[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [geocodingProgress, setGeocodingProgress] = useState({ current: 0, total: 0 });
+
+  const fetchIdRef = React.useRef(0);
+
+  const fetchData = async () => {
+    const currentFetchId = ++fetchIdRef.current;
+    setRefreshing(true);
+    setLoading(true);
+    try {
+      const [custRes, machRes] = await Promise.all([
+        supabase.from('customers').select('*').order('name'),
+        supabase.from('machinery').select('*')
+      ]);
+
+      if (custRes.error) throw custRes.error;
+      if (machRes.error) throw machRes.error;
+
+      if (currentFetchId !== fetchIdRef.current) return;
+
+      const customers = custRes.data as Customer[];
+      const machines = (machRes.data as any[]).map(m => ({
+        ...m,
+        customerId: m.customer_id,
+        serialNumber: m.serial_number,
+        purchaseDate: m.purchase_date,
+        warrantyExpiry: m.warranty_expiry,
+        lastServiceDate: m.last_service_date,
+        nextServiceDueDate: m.next_service_due_date,
+      })) as Machinery[];
+
+      // Map machines to customers
+      const customerMachineMap = new Map<string, Machinery[]>();
+      machines.forEach(m => {
+        const list = customerMachineMap.get(m.customerId) || [];
+        list.push(m);
+        customerMachineMap.set(m.customerId, list);
+      });
+
+      // Filter customers into those with direct coordinates and those needing geocoding
+      const directLocations: (Customer & { position: [number, number], machines: Machinery[] })[] = [];
+      const needingGeocoding: Customer[] = [];
+
+      customers.forEach(c => {
+        if (c.latitude != null && c.longitude != null) {
+          directLocations.push({
+            ...c,
+            position: [c.latitude, c.longitude],
+            machines: customerMachineMap.get(c.id) || []
+          });
+        } else if (c.address && c.address.trim() !== '') {
+          needingGeocoding.push(c);
+        }
+      });
+
+      setCustomerLocations(directLocations);
+      if (directLocations.length > 0) setLoading(false);
+
+      setGeocodingProgress({ current: 0, total: needingGeocoding.length });
+
+      // Geocode incrementally
+      const geocode = async (address: string): Promise<[number, number] | null> => {
+        try {
+          // Nominatim requires 1s delay
+          await new Promise(r => setTimeout(r, 1100));
+          if (currentFetchId !== fetchIdRef.current) return null;
+          
+          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`, {
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'MachineryServiceApp/1.0'
+            }
+          });
+          const data = await res.json();
+          if (data && data.length > 0) {
+            return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+          }
+        } catch (e) {
+          console.error("Geocoding failed for", address, e);
+        }
+        return null;
+      };
+
+      // Process addresses one by one to respect rate limits and update UI
+      let count = 0;
+      for (const customer of needingGeocoding) {
+        if (currentFetchId !== fetchIdRef.current) break;
+
+        if (customer.address) {
+          const position = await geocode(customer.address);
+          if (position && currentFetchId === fetchIdRef.current) {
+            setCustomerLocations(prev => {
+              // Prevent duplicates if results arrive out of order or multiple loops active
+              if (prev.some(p => p.id === customer.id)) return prev;
+              return [
+                ...prev, 
+                { 
+                  ...customer, 
+                  position, 
+                  machines: customerMachineMap.get(customer.id) || [] 
+                }
+              ];
+            });
+          }
+        }
+        count++;
+        if (currentFetchId === fetchIdRef.current) {
+          setGeocodingProgress({ current: count, total: needingGeocoding.length });
+          if (count === 1) setLoading(false);
+        }
+      }
+
+    } catch (err) {
+      if (currentFetchId === fetchIdRef.current) {
+        handleSupabaseError(err, OperationType.LIST, 'map-view');
+        addToast("Failed to load map data", "error");
+      }
+    } finally {
+      if (currentFetchId === fetchIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, [profile]);
+
+  // Fix for default Leaflet marker icon
+  useEffect(() => {
+    delete (L.Icon.Default.prototype as any)._getIconUrl;
+    L.Icon.Default.mergeOptions({
+      iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+      iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+      shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+    });
+  }, []);
+
+  const center: [number, number] = useMemo(() => {
+    if (customerLocations.length === 0) return [0, 0];
+    const sum = customerLocations.reduce((acc, loc) => [acc[0] + loc.position[0], acc[1] + loc.position[1]], [0, 0]);
+    return [sum[0] / customerLocations.length, sum[1] / customerLocations.length];
+  }, [customerLocations]);
+
+  if (loading && customerLocations.length === 0) return <div className="flex flex-col items-center justify-center p-12 gap-4">
+    <LoadingSpinner />
+    <p className="text-[10px] font-mono uppercase text-gray-500 animate-pulse">Initializing map & resolving addresses...</p>
+  </div>;
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6 h-[calc(100vh-12rem)]">
+      <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] h-full flex flex-col">
+        <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <h2 className="text-xs font-bold tracking-widest uppercase italic font-mono">Customer Locations & Fleet Distribution</h2>
+            {geocodingProgress.current < geocodingProgress.total && (
+              <div className="flex items-center gap-2">
+                <RotateCw size={12} className="animate-spin text-blue-500" />
+                <span className="text-[10px] font-mono font-bold text-blue-500">
+                  RESOLVING: {geocodingProgress.current}/{geocodingProgress.total}
+                </span>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-4">
+             <div className="flex items-center gap-6 text-[10px] font-mono font-bold">
+               <div className="flex items-center gap-1">
+                 <div className="w-2 h-2 bg-green-500 rounded-full" />
+                 <span>ACTIVE CLIENTS</span>
+               </div>
+             </div>
+             <button onClick={fetchData} className="p-1 hover:bg-gray-200 transition-colors">
+               <RotateCw size={14} className={refreshing ? 'animate-spin' : ''} />
+             </button>
+             <MapPin size={16} className="text-gray-400" />
+          </div>
+        </div>
+        <div className="flex-1 relative overflow-hidden">
+          <MapContainer center={center[0] !== 0 ? center : [0, 0]} zoom={customerLocations.length > 0 ? 5 : 2} scrollWheelZoom={true} style={{ height: '100%', width: '100%' }}>
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            {center[0] !== 0 && <RecenterMap position={center} />}
+            {customerLocations.map((loc) => (
+              <Marker key={loc.id} position={loc.position}>
+                <Popup>
+                  <div className="p-2 min-w-[250px]">
+                    <div className="flex items-center justify-between mb-2">
+                       <h4 className="font-bold text-sm uppercase tracking-tight m-0">{loc.name}</h4>
+                       <span className="text-[10px] font-mono bg-[#141414] text-white px-2 py-0.5">{loc.machines.length} UNITS</span>
+                    </div>
+                    <p className="text-[10px] uppercase text-gray-500 font-mono leading-tight mb-3 italic">{loc.address}</p>
+                    
+                    <div className="border-t border-[#141414] pt-2 mt-2 space-y-2 max-h-40 overflow-y-auto">
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400">MACHINERY AT THIS LOCATION:</p>
+                      {loc.machines.length === 0 ? (
+                        <p className="text-[10px] italic text-gray-400">No machinery registered</p>
+                      ) : (
+                        loc.machines.map(m => (
+                          <div key={m.id} className="flex items-center justify-between p-2 bg-gray-50 border border-gray-200">
+                            <div className="flex items-center gap-2">
+                              {getMachineryIcon(m.type, 12)}
+                              <span className="text-[10px] font-bold">{m.model}</span>
+                            </div>
+                            <span className={`text-[8px] font-bold uppercase ${
+                              m.status === 'Operational' ? 'text-green-600' : 
+                              m.status === 'Due for Service' ? 'text-red-600' : 'text-amber-600'
+                            }`}>{m.status}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    
+                    <div className="mt-4 flex gap-2">
+                      <div className="flex-1 text-[9px] text-gray-400 font-mono">
+                        <Phone size={8} className="inline mr-1" /> {loc.phone}
+                      </div>
+                    </div>
+                  </div>
+                </Popup>
+              </Marker>
+            ))}
+          </MapContainer>
+        </div>
+      </div>
+      <div className="bg-white p-3 border border-[#141414] flex items-center gap-3">
+        <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+        <p className="text-[9px] font-mono uppercase text-gray-400">Geographic distribution based on customer registered addresses. Geocoding resolves sequentially to respect Nominatim API terms. Map remains interactive during background resolution.</p>
+      </div>
+    </motion.div>
+  );
+}
+
 function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
   return (
     <button 
@@ -1655,6 +1909,7 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
   const { addToast } = useToast();
   const [formData, setFormData] = useState({ 
     name: '', email: '', phone: '', address: '',
+    latitude: '', longitude: '',
     invoiceDate: '', invoiceNumber: '', invoiceAmount: ''
   });
   const [machineryList, setMachineryList] = useState([{
@@ -1703,6 +1958,8 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
           email: formData.email,
           phone: formData.phone,
           address: formData.address,
+          latitude: formData.latitude ? parseFloat(formData.latitude) : null,
+          longitude: formData.longitude ? parseFloat(formData.longitude) : null,
           invoice_date: formData.invoiceDate || null,
           invoice_number: formData.invoiceNumber || null,
           invoice_amount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0,
@@ -1814,6 +2071,30 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
                     value={formData.address}
                     onChange={e => setFormData({ ...formData, address: e.target.value })}
                   />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Latitude (Optional)</label>
+                    <input 
+                      type="number" 
+                      step="any"
+                      placeholder="-1.286389"
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.latitude}
+                      onChange={e => setFormData({ ...formData, latitude: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Longitude (Optional)</label>
+                    <input 
+                      type="number" 
+                      step="any"
+                      placeholder="36.817223"
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.longitude}
+                      onChange={e => setFormData({ ...formData, longitude: e.target.value })}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -2007,6 +2288,8 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
     email: customer.email || '', 
     phone: customer.phone, 
     address: customer.address || '',
+    latitude: customer.latitude?.toString() || '',
+    longitude: customer.longitude?.toString() || '',
     invoiceDate: customer.invoiceDate || '',
     invoiceNumber: customer.invoiceNumber || '',
     invoiceAmount: customer.invoiceAmount?.toString() || ''
@@ -2059,8 +2342,10 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
           email: formData.email,
           phone: formData.phone,
           address: formData.address,
-          invoice_date: formData.invoiceDate,
-          invoice_number: formData.invoiceNumber,
+          latitude: formData.latitude ? parseFloat(formData.latitude) : null,
+          longitude: formData.longitude ? parseFloat(formData.longitude) : null,
+          invoice_date: formData.invoiceDate || null,
+          invoice_number: formData.invoiceNumber || null,
           invoice_amount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0
         })
         .eq('id', customer.id);
@@ -2136,6 +2421,28 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
                     value={formData.address}
                     onChange={e => setFormData({ ...formData, address: e.target.value })}
                   />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Latitude (Optional)</label>
+                    <input 
+                      type="number" 
+                      step="any"
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.latitude}
+                      onChange={e => setFormData({ ...formData, latitude: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Longitude (Optional)</label>
+                    <input 
+                      type="number" 
+                      step="any"
+                      className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                      value={formData.longitude}
+                      onChange={e => setFormData({ ...formData, longitude: e.target.value })}
+                    />
+                  </div>
                 </div>
                 <div className="pt-4 border-t border-gray-100 space-y-4">
                   <h3 className="text-[10px] font-bold tracking-widest text-[#141414] uppercase italic">Invoice Details</h3>
@@ -2248,9 +2555,17 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
 
                     <div className="flex items-start gap-3 p-4 border border-[#141414] bg-white shadow-[2px_2px_0px_0px_rgba(20,20,20,0.05)]">
                       <MapPin size={16} className="text-gray-400 mt-1" />
-                      <div>
-                        <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Physical Address</p>
-                        <p className="text-sm font-mono leading-relaxed">{customer.address || 'NO ADDRESS RECORDED'}</p>
+                      <div className="space-y-3 flex-1">
+                        <div>
+                          <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Physical Address</p>
+                          <p className="text-sm font-mono leading-relaxed">{customer.address || 'NO ADDRESS RECORDED'}</p>
+                        </div>
+                        {customer.latitude && customer.longitude && (
+                          <div className="pt-3 border-t border-gray-100">
+                             <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">GPS Coordinates</p>
+                             <p className="text-sm font-mono leading-relaxed">{customer.latitude}, {customer.longitude}</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -3522,6 +3837,12 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
   const [machinery, setMachinery] = useState<Machinery[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [mechanics, setMechanics] = useState<UserProfile[]>([]);
+  const [availableParts, setAvailableParts] = useState<Part[]>([]);
+  const [selectedParts, setSelectedParts] = useState<UsedPart[]>([]);
+  const [manualPart, setManualPart] = useState({ name: '', sku: '' });
+  const [initialWorkDone, setInitialWorkDone] = useState('');
+  const [initialPartsReplaced, setInitialPartsReplaced] = useState('');
+  const [showLogSection, setShowLogSection] = useState(false);
   const [activeTickets, setActiveTickets] = useState<ServiceTicket[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
@@ -3535,17 +3856,19 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        const [machRes, custRes, userRes, ticketRes] = await Promise.all([
+        const [machRes, custRes, userRes, ticketRes, partsRes] = await Promise.all([
           supabase.from('machinery').select('*'),
           supabase.from('customers').select('*'),
           supabase.from('users').select('*').in('role', ['Field Technician', 'Administrator', 'Manager']),
-          supabase.from('service_tickets').select('*').in('status', ['Open', 'In Progress'])
+          supabase.from('service_tickets').select('*').in('status', ['Open', 'In Progress']),
+          supabase.from('parts').select('*').order('name', { ascending: true })
         ]);
 
         if (machRes.error) throw machRes.error;
         if (custRes.error) throw custRes.error;
         if (userRes.error) throw userRes.error;
         if (ticketRes.error) throw ticketRes.error;
+        if (partsRes.error) throw partsRes.error;
 
         setMachinery((machRes.data as any[]).map(m => ({
           ...m,
@@ -3582,6 +3905,13 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
           closedAt: t.closed_at,
           satisfactionScore: t.satisfaction_score
         })) as ServiceTicket[]);
+
+        setAvailableParts((partsRes.data as any[]).map(p => ({
+          ...p,
+          minQuantity: p.min_quantity,
+          unitPrice: p.unit_price,
+          updatedAt: p.updated_at
+        })) as Part[]);
       } catch (err) {
         handleSupabaseError(err, OperationType.LIST, 'add-ticket-modal-init');
       }
@@ -3656,7 +3986,7 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
         description: formData.description,
         customer_id: selectedCustomerId,
         mechanic_id: formData.mechanicId,
-        status: 'Open',
+        status: initialWorkDone ? 'In Progress' : 'Open',
         opened_at: new Date().toISOString()
       }).select().single();
 
@@ -3670,7 +4000,64 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
         await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceTicket', ticketData.id, `Created ticket: ${formData.description}`);
         await logAudit(profile.uid, profile.name, 'UPDATE', 'Machinery', machine.id, 'Status changed to Under Repair');
       }
-      addToast("Service ticket opened successfully", "success");
+
+      // Add initial log if provided
+      if (initialWorkDone) {
+        const selectedMechanic = mechanics.find(m => m.uid === formData.mechanicId);
+        const logData = {
+          ticket_id: ticketData.id,
+          mechanic_id: formData.mechanicId,
+          mechanic_name: selectedMechanic?.name || profile?.name || 'Unknown Mechanic',
+          work_done: initialWorkDone,
+          parts_replaced: initialPartsReplaced,
+          timestamp: new Date().toISOString(),
+          used_parts: selectedParts
+        };
+
+        const { data: logRes, error: logError } = await supabase.from('service_logs').insert(logData).select().single();
+        if (logError) throw logError;
+
+        if (profile) {
+          await logAudit(profile.uid, profile.name, 'CREATE', 'ServiceLog', logRes.id, `Added initial log: ${initialWorkDone}`);
+        }
+
+        // Deduct from inventory
+        for (const sp of selectedParts) {
+          if (sp.partId) {
+            const part = availableParts.find(p => p.id === sp.partId);
+            if (part) {
+              const newQty = part.quantity - sp.quantity;
+              const { error: partError } = await supabase
+                .from('parts')
+                .update({ 
+                  quantity: newQty,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', sp.partId);
+              
+              if (partError) throw partError;
+
+              if (profile) {
+                await logAudit(profile.uid, profile.name, 'UPDATE', 'Part', sp.partId, `Deducted ${sp.quantity} units for ticket ${ticketData.id}`);
+              }
+
+              // Trigger low stock notification
+              if (newQty <= (part.minQuantity || 5)) {
+                await supabase.from('notifications').insert({
+                  type: 'LOW_STOCK',
+                  status: 'SYSTEM',
+                  sent_at: new Date().toISOString(),
+                  part_id: sp.partId,
+                  part_name: part.name,
+                  message: `LOW STOCK ALERT: ${part.name} (SKU: ${part.sku}) is down to ${newQty} units. Minimum required: ${part.minQuantity || 5}.`
+                });
+              }
+            }
+          }
+        }
+      }
+
+      addToast("Service ticket opened successfully" + (initialWorkDone ? " with initial log" : ""), "success");
       onClose();
     } catch (err) {
       addToast("Failed to open ticket", "error");
@@ -3685,71 +4072,232 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
       <motion.div 
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        className="bg-white border border-[#141414] p-8 max-w-md w-full shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+        className="bg-white border border-[#141414] max-w-4xl w-full max-h-[90vh] overflow-y-auto shadow-[12px_12px_0px_0px_rgba(20,20,20,1)] flex flex-col"
       >
-        <h2 className="text-xl font-bold mb-6 tracking-tighter uppercase italic">Open Service Ticket</h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Select Customer *</label>
-            <select 
-              required
-              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
-              value={selectedCustomerId}
-              onChange={e => handleCustomerChange(e.target.value)}
-            >
-              <option value="">SELECT CUSTOMER...</option>
-              {customers.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+        <div className="p-6 border-b border-[#141414] flex justify-between items-center bg-gray-50">
+          <h2 className="text-xl font-bold tracking-tighter uppercase italic">Open Service Ticket</h2>
+          <button onClick={onClose} className="p-1 hover:bg-gray-200 transition-colors border border-[#141414]">
+            <Plus className="rotate-45" size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-8 flex flex-col lg:grid lg:grid-cols-2 gap-8">
+          <div className="space-y-4">
+            <h3 className="text-xs font-bold tracking-widest uppercase mb-4 italic text-gray-400">Basic Information</h3>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Select Customer *</label>
+              <select 
+                required
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                value={selectedCustomerId}
+                onChange={e => handleCustomerChange(e.target.value)}
+              >
+                <option value="">SELECT CUSTOMER...</option>
+                {customers.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Select Machinery *</label>
+              <select 
+                required
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                value={formData.machineryId}
+                onChange={e => handleMachineChange(e.target.value)}
+              >
+                <option value="">SELECT MACHINE...</option>
+                {filteredMachinery.map(m => (
+                  <option key={m.id} value={m.id}>
+                    {m.model} ({m.serialNumber})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Assign Mechanic *</label>
+              <select 
+                required
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                value={formData.mechanicId}
+                onChange={e => setFormData({ ...formData, mechanicId: e.target.value })}
+              >
+                <option value="">SELECT MECHANIC...</option>
+                {sortedMechanics.map((m, index) => (
+                  <option key={m.uid} value={m.uid}>
+                    {m.name} ({m.role}) - {mechanicWorkload[m.uid] || 0} Active Tickets {index === 0 ? '★ SUGGESTED' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Problem Description *</label>
+              <textarea 
+                required
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none h-32"
+                placeholder="DESCRIBE THE ISSUE OR SERVICE REQUIRED..."
+                value={formData.description}
+                onChange={e => setFormData({ ...formData, description: e.target.value })}
+              />
+            </div>
           </div>
-          <div>
-            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Select Machinery *</label>
-            <select 
-              required
-              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
-              value={formData.machineryId}
-              onChange={e => handleMachineChange(e.target.value)}
-            >
-              <option value="">SELECT MACHINE...</option>
-              {filteredMachinery.map(m => (
-                <option key={m.id} value={m.id}>
-                  {m.model} ({m.serialNumber})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Assign Mechanic *</label>
-            <select 
-              required
-              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
-              value={formData.mechanicId}
-              onChange={e => setFormData({ ...formData, mechanicId: e.target.value })}
-            >
-              <option value="">SELECT MECHANIC...</option>
-              {sortedMechanics.map((m, index) => (
-                <option key={m.uid} value={m.uid}>
-                  {m.name} ({m.role}) - {mechanicWorkload[m.uid] || 0} Active Tickets {index === 0 ? '★ SUGGESTED' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Problem Description *</label>
-            <textarea 
-              required
-              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none h-32"
-              placeholder="DESCRIBE THE ISSUE OR SERVICE REQUIRED..."
-              value={formData.description}
-              onChange={e => setFormData({ ...formData, description: e.target.value })}
-            />
-          </div>
-          <div className="flex gap-4 pt-4">
-            <button type="button" onClick={onClose} className="flex-1 py-2 border border-[#141414] text-xs font-bold hover:bg-gray-50 transition-colors">CANCEL</button>
-            <button type="submit" disabled={loading} className="flex-1 py-2 bg-[#141414] text-white text-xs font-bold hover:bg-gray-800 transition-colors disabled:opacity-50">
-              {loading ? 'OPENING...' : 'OPEN TICKET'}
-            </button>
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-bold tracking-widest uppercase italic text-gray-400">Initial Service Log</h3>
+              <button 
+                type="button"
+                onClick={() => setShowLogSection(!showLogSection)}
+                className={`text-[9px] font-bold uppercase px-2 py-1 border border-[#141414] transition-colors ${showLogSection ? 'bg-[#141414] text-white' : 'bg-white text-[#141414]'}`}
+              >
+                {showLogSection ? 'REMOVE LOG' : 'ADD INITIAL LOG'}
+              </button>
+            </div>
+
+            {showLogSection ? (
+              <div className="space-y-4 bg-gray-50 p-4 border border-dashed border-gray-300">
+                <div>
+                  <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Work Performed</label>
+                  <textarea 
+                    className="w-full p-2 border border-[#141414] text-[10px] font-mono focus:outline-none h-20"
+                    placeholder="ENTER WORK ALREADY PERFORMED..."
+                    value={initialWorkDone}
+                    onChange={e => setInitialWorkDone(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Other Parts (Non-Inventory)</label>
+                  <input 
+                    type="text" 
+                    className="w-full p-2 border border-[#141414] text-[10px] font-mono focus:outline-none"
+                    placeholder="E.G. SEALS, BOLTS..."
+                    value={initialPartsReplaced}
+                    onChange={e => setInitialPartsReplaced(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[9px] font-bold text-gray-500 mb-1 uppercase">Inventory Parts Usage</label>
+                  <div className="space-y-2">
+                    <select 
+                      className="w-full p-2 border border-[#141414] text-[10px] font-mono focus:outline-none bg-white"
+                      onChange={(e) => {
+                        const partId = e.target.value;
+                        if (!partId) return;
+                        if (selectedParts.find(sp => sp.partId === partId)) return;
+                        const part = availableParts.find(p => p.id === partId);
+                        if (part) {
+                          setSelectedParts([...selectedParts, { 
+                            partId: part.id, 
+                            partName: part.name, 
+                            sku: part.sku, 
+                            quantity: 1 
+                          }]);
+                        }
+                        e.target.value = '';
+                      }}
+                    >
+                      <option value="">SELECT FROM INVENTORY...</option>
+                      {availableParts.filter(p => p.quantity > 0).map(p => (
+                        <option key={p.id} value={p.id}>{p.name} (SKU: {p.sku}) - Qty: {p.quantity}</option>
+                      ))}
+                    </select>
+                    
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        placeholder="MANUAL PART"
+                        className="flex-1 p-2 border border-[#141414] text-[10px] font-mono focus:outline-none bg-white"
+                        value={manualPart.name}
+                        onChange={e => setManualPart({ ...manualPart, name: e.target.value })}
+                      />
+                      <input 
+                        type="text" 
+                        placeholder="SKU"
+                        className="w-20 p-2 border border-[#141414] text-[10px] font-mono focus:outline-none bg-white"
+                        value={manualPart.sku}
+                        onChange={e => setManualPart({ ...manualPart, sku: e.target.value })}
+                      />
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          if (!manualPart.name || !manualPart.sku) return;
+                          setSelectedParts([...selectedParts, { 
+                            partName: manualPart.name, 
+                            sku: manualPart.sku, 
+                            quantity: 1 
+                          }]);
+                          setManualPart({ name: '', sku: '' });
+                        }}
+                        className="px-3 py-2 bg-[#141414] text-white text-[10px] font-bold uppercase transition-transform active:scale-95"
+                      >
+                        ADD
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {selectedParts.map((sp, idx) => {
+                        const part = sp.partId ? availableParts.find(p => p.id === sp.partId) : null;
+                        return (
+                          <div key={idx} className="flex items-center gap-1 bg-white border border-[#141414] px-1.5 py-1">
+                            <span className="text-[8px] font-bold uppercase tracking-tighter truncate max-w-[80px]">
+                              {sp.partName} <span className="text-gray-400">({sp.sku})</span>
+                            </span>
+                            <div className="flex items-center gap-1 ml-1 bg-gray-50 border border-gray-100">
+                              <button 
+                                type="button"
+                                onClick={() => {
+                                  const next = [...selectedParts];
+                                  next[idx].quantity = Math.max(1, next[idx].quantity - 1);
+                                  setSelectedParts(next);
+                                }}
+                                className="px-1 hover:bg-gray-200"
+                              >-</button>
+                              <span className="text-[8px] font-mono w-4 text-center">{sp.quantity}</span>
+                              <button 
+                                type="button"
+                                onClick={() => {
+                                  const next = [...selectedParts];
+                                  const max = part?.quantity || 999;
+                                  next[idx].quantity = Math.min(max, next[idx].quantity + 1);
+                                  setSelectedParts(next);
+                                }}
+                                className="px-1 hover:bg-gray-200"
+                              >+</button>
+                            </div>
+                            <button 
+                              type="button"
+                              onClick={() => setSelectedParts(selectedParts.filter((_, i) => i !== idx))}
+                              className="text-red-500 hover:text-red-700 ml-1"
+                            >
+                              <Plus className="rotate-45" size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="h-full flex items-center justify-center border border-dashed border-gray-200 p-12 text-center">
+                <p className="text-[10px] font-mono text-gray-400 uppercase leading-relaxed">
+                  Toggle initial log to record work performed<br/>immediately upon ticket creation.
+                </p>
+              </div>
+            )}
+            
+            <div className="pt-6">
+              <button 
+                type="submit" 
+                disabled={loading} 
+                className="w-full py-4 bg-[#141414] text-white text-sm font-bold hover:bg-gray-800 transition-all shadow-[6px_6px_0px_0px_rgba(20,20,20,0.1)] active:translate-x-1 active:translate-y-1 active:shadow-none"
+              >
+                {loading ? 'PROCESSING...' : (showLogSection ? 'OPEN TICKET & RECORD WORK' : 'OPEN SERVICE TICKET')}
+              </button>
+              <button type="button" onClick={onClose} className="w-full mt-3 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest hover:text-red-500 transition-colors">
+                ABANDON REQUEST
+              </button>
+            </div>
           </div>
         </form>
       </motion.div>
@@ -4191,29 +4739,38 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                           {selectedParts.map((sp, idx) => {
                             const part = sp.partId ? availableParts.find(p => p.id === sp.partId) : null;
                             return (
-                              <div key={idx} className="flex items-center gap-1 bg-white border border-[#141414] px-1.5 py-0.5">
+                              <div key={idx} className="flex items-center gap-1 bg-white border border-[#141414] px-1.5 py-1 shadow-[2px_2px_0px_0px_rgba(20,20,20,0.05)]">
                                 <span className="text-[8px] font-bold uppercase tracking-tighter max-w-[100px] truncate">
                                   {sp.partName} <span className="text-gray-400">({sp.sku})</span>
                                 </span>
-                                <input 
-                                  type="number" 
-                                  min="1"
-                                  max={part?.quantity || 999}
-                                  className="w-8 text-[8px] font-mono border-none focus:outline-none bg-gray-50 text-center"
-                                  value={sp.quantity}
-                                  onChange={(e) => {
-                                    const val = Math.min(part?.quantity || 999, Math.max(1, parseInt(e.target.value) || 1));
-                                    const next = [...selectedParts];
-                                    next[idx].quantity = val;
-                                    setSelectedParts(next);
-                                  }}
-                                />
+                                <div className="flex items-center gap-1 ml-1 bg-gray-50 border border-gray-100">
+                                  <button 
+                                    type="button"
+                                    onClick={() => {
+                                      const next = [...selectedParts];
+                                      next[idx].quantity = Math.max(1, next[idx].quantity - 1);
+                                      setSelectedParts(next);
+                                    }}
+                                    className="px-1 hover:bg-gray-200 text-[10px] font-bold"
+                                  >-</button>
+                                  <span className="text-[8px] font-mono w-4 text-center">{sp.quantity}</span>
+                                  <button 
+                                    type="button"
+                                    onClick={() => {
+                                      const next = [...selectedParts];
+                                      const max = part?.quantity || 999;
+                                      next[idx].quantity = Math.min(max, next[idx].quantity + 1);
+                                      setSelectedParts(next);
+                                    }}
+                                    className="px-1 hover:bg-gray-200 text-[10px] font-bold"
+                                  >+</button>
+                                </div>
                                 <button 
                                   type="button"
                                   onClick={() => setSelectedParts(selectedParts.filter((_, i) => i !== idx))}
-                                  className="text-red-500 hover:text-red-700"
+                                  className="text-red-500 hover:text-red-700 ml-1"
                                 >
-                                  <Plus className="rotate-45" size={10} />
+                                  <Plus className="rotate-45" size={12} />
                                 </button>
                               </div>
                             );
