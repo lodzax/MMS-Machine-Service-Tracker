@@ -22,8 +22,14 @@ export interface Customer {
   createdAt: string;
 }
 
-export type MachineryType = 'Tractor' | 'Generator' | 'Water pump' | 'Electric Motors' | 'Transformers' | 'Bow Mills' | 'Jaw Crusher' | 'Electric Compressors' | 'Diesel Compressors' | 'Engines';
+export type MachineryType = string;
 export type MachineryStatus = 'Operational' | 'Due for Service' | 'Under Repair';
+
+export interface MachineryTypeRecord {
+  id: string;
+  name: string;
+  created_at: string;
+}
 
 export interface Machinery {
   id: string;

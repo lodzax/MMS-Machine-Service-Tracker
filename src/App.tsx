@@ -1,16 +1,147 @@
-import React, { useState, useEffect, createContext, useContext, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, createContext, useContext, useMemo, useCallback, useRef } from 'react';
 import { 
   supabase, signIn, signUp, logout, onAuthStateChanged,
   OperationType, handleSupabaseError, logAudit
 } from './supabase';
-import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification, Part, UsedPart } from './types';
+import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification, Part, UsedPart, MachineryTypeRecord } from './types';
 import { 
   LayoutDashboard, Users, Construction, Ticket, History, LogOut, Search, Plus, Trash2, Bell,
   CheckCircle2, AlertCircle, Clock, ChevronRight, Settings, Wrench, Phone, Mail, MapPin, Calendar, User as UserIcon, Filter, FileText, Download, BarChart3,
-  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge
+  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge, AlertTriangle, X, Edit2
 } from 'lucide-react';
+
+// --- Contexts ---
+// existing ToastContext code...
+
+interface MachineryTypeContextType {
+  machineryTypes: MachineryTypeRecord[];
+  loading: boolean;
+  tableExists: boolean;
+  addMachineryType: (name: string) => Promise<void>;
+  updateMachineryType: (id: string, name: string) => Promise<void>;
+  deleteMachineryType: (id: string) => Promise<void>;
+  refreshMachineryTypes: () => Promise<void>;
+}
+
+const MachineryTypeContext = createContext<MachineryTypeContextType>({
+  machineryTypes: [],
+  loading: true,
+  tableExists: false,
+  addMachineryType: async () => {},
+  updateMachineryType: async () => {},
+  deleteMachineryType: async () => {},
+  refreshMachineryTypes: async () => {},
+});
+
+const useMachineryTypes = () => useContext(MachineryTypeContext);
+
+const MachineryTypeProvider = ({ children }: { children: React.ReactNode }) => {
+  const [machineryTypes, setMachineryTypes] = useState<MachineryTypeRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tableExists, setTableExists] = useState(true);
+  const { addToast } = useToast();
+
+  const fetchMachineryTypes = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('machinery_types')
+        .select('*')
+        .order('name');
+      
+      if (error) {
+        // PGRST204/205 indicates table not found
+        if (error.code === 'PGRST204' || error.code === 'PGRST205' || error.message?.includes('not found')) {
+          console.warn("Machinery types table not found. Using defaults.");
+          setTableExists(false);
+        } else {
+          console.error("Error fetching machinery types:", error);
+        }
+        
+        const defaults = ['Tractor', 'Generator', 'Water pump', 'Electric Motors', 'Transformers', 'Bow Mills', 'Jaw Crusher', 'Electric Compressors', 'Diesel Compressors', 'Engines', 'Excavator', 'Bulldozer', 'Loader', 'Crane', 'Forklift', 'Grader', 'Roller', 'Paver', 'Backhoe', 'Other'];
+        setMachineryTypes(defaults.map((name, i) => ({ id: `default-${i}`, name, created_at: new Date().toISOString() })));
+      } else {
+        setMachineryTypes(data as MachineryTypeRecord[]);
+        setTableExists(true);
+      }
+    } catch (err) {
+      console.error("Critical error in fetchMachineryTypes:", err);
+      setTableExists(false);
+      // Ensure we have some defaults even on catastrophic failure
+      const defaults = ['Tractor', 'Generator', 'Water pump', 'Other'];
+      setMachineryTypes(defaults.map((name, i) => ({ id: `fatal-default-${i}`, name, created_at: new Date().toISOString() })));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMachineryTypes();
+  }, [fetchMachineryTypes]);
+
+  const addMachineryType = async (name: string) => {
+    try {
+      const { error } = await supabase
+        .from('machinery_types')
+        .insert([{ name }]);
+      
+      if (error) throw error;
+      addToast("Machinery type added", "success");
+      await fetchMachineryTypes();
+    } catch (err) {
+      console.error("Failed to add machinery type:", err);
+      addToast("Failed to add machinery type. Check if the table exists.", "error");
+    }
+  };
+
+  const updateMachineryType = async (id: string, name: string) => {
+    try {
+      const { error } = await supabase
+        .from('machinery_types')
+        .update({ name })
+        .eq('id', id);
+      
+      if (error) throw error;
+      addToast("Machinery type updated", "success");
+      await fetchMachineryTypes();
+    } catch (err) {
+      console.error("Failed to update machinery type:", err);
+      addToast("Failed to update machinery type", "error");
+    }
+  };
+
+  const deleteMachineryType = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('machinery_types')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+      addToast("Machinery type deleted", "success");
+      await fetchMachineryTypes();
+    } catch (err) {
+      console.error("Failed to delete machinery type:", err);
+      addToast("Failed to delete machinery type", "error");
+    }
+  };
+
+  return (
+    <MachineryTypeContext.Provider value={{ 
+      machineryTypes, 
+      loading, 
+      tableExists,
+      addMachineryType, 
+      updateMachineryType, 
+      deleteMachineryType,
+      refreshMachineryTypes: fetchMachineryTypes 
+    }}>
+      {children}
+    </MachineryTypeContext.Provider>
+  );
+};
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 import autoTable from 'jspdf-autotable';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -174,6 +305,15 @@ const getMachineryIcon = (type: MachineryType, size = 20) => {
     case 'Electric Compressors': return <Wind size={size} />;
     case 'Diesel Compressors': return <Fuel size={size} />;
     case 'Engines': return <Settings2 size={size} />;
+    case 'Excavator': return <Construction size={size} />;
+    case 'Bulldozer': return <Construction size={size} />;
+    case 'Loader': return <Construction size={size} />;
+    case 'Crane': return <Construction size={size} />;
+    case 'Forklift': return <Box size={size} />;
+    case 'Grader': return <Construction size={size} />;
+    case 'Roller': return <Construction size={size} />;
+    case 'Paver': return <Construction size={size} />;
+    case 'Backhoe': return <Construction size={size} />;
     default: return <Construction size={size} />;
   }
 };
@@ -181,9 +321,11 @@ const getMachineryIcon = (type: MachineryType, size = 20) => {
 export default function App() {
   return (
     <ToastProvider>
-      <ErrorBoundary>
-        <AppContent />
-      </ErrorBoundary>
+      <MachineryTypeProvider>
+        <ErrorBoundary>
+          <AppContent />
+        </ErrorBoundary>
+      </MachineryTypeProvider>
     </ToastProvider>
   );
 }
@@ -1275,6 +1417,59 @@ function MapView() {
   const [statusFilter, setStatusFilter] = useState<MachineryStatus | 'All'>('All');
 
   const fetchIdRef = React.useRef(0);
+  const mapRef = useRef<HTMLDivElement>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async (format: 'png' | 'pdf') => {
+    if (!mapRef.current) return;
+    
+    setExporting(true);
+    addToast(`Preparing ${format.toUpperCase()} export...`, "info");
+    
+    try {
+      // Find the leaflet container
+      const container = mapRef.current;
+      
+      // We need to wait a small bit to ensure everything is rendered
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      const canvas = await html2canvas(container, {
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        // Leaflet markers and tiles can sometimes be tricky
+        ignoreElements: (element) => {
+          // Ignore zoom controls and other UI elements we don't want in the export
+          return element.classList.contains('leaflet-control-container');
+        }
+      });
+
+      if (format === 'png') {
+        const image = canvas.toDataURL("image/png");
+        const link = document.createElement('a');
+        link.download = `machinery-map-${new Date().toISOString().split('T')[0]}.png`;
+        link.href = image;
+        link.click();
+        addToast("Map exported as PNG successfully", "success");
+      } else {
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF({
+          orientation: canvas.width > canvas.height ? 'landscape' : 'portrait',
+          unit: 'px',
+          format: [canvas.width, canvas.height]
+        });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save(`machinery-map-${new Date().toISOString().split('T')[0]}.pdf`);
+        addToast("Map exported as PDF successfully", "success");
+      }
+    } catch (err) {
+      console.error("Export failed:", err);
+      addToast("Failed to export map. Please try again.", "error");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const getStatusPriority = (status: MachineryStatus): number => {
     switch (status) {
@@ -1507,6 +1702,29 @@ function MapView() {
              
              <div className="h-4 w-px bg-gray-200 mx-2" />
 
+             <div className="flex items-center gap-2 mr-2">
+               <button 
+                 onClick={() => handleExport('png')} 
+                 disabled={exporting}
+                 title="Export as PNG"
+                 className="p-1.5 border border-[#141414] hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center gap-1"
+               >
+                 <Download size={12} />
+                 <span className="text-[8px] font-bold">PNG</span>
+               </button>
+               <button 
+                 onClick={() => handleExport('pdf')} 
+                 disabled={exporting}
+                 title="Export as PDF"
+                 className="p-1.5 border border-[#141414] hover:bg-gray-100 transition-colors disabled:opacity-50 flex items-center gap-1"
+               >
+                 <FileText size={12} />
+                 <span className="text-[8px] font-bold">PDF</span>
+               </button>
+             </div>
+
+             <div className="h-4 w-px bg-gray-200 mx-2" />
+
              <div className="flex items-center gap-6 text-[10px] font-mono font-bold">
                <div className="flex items-center gap-3">
                  <div className="flex items-center gap-1.5">
@@ -1529,7 +1747,7 @@ function MapView() {
              <MapPin size={16} className="text-gray-400" />
           </div>
         </div>
-        <div className="flex-1 relative overflow-hidden">
+        <div className="flex-1 relative overflow-hidden" ref={mapRef}>
           <MapContainer center={center[0] !== 0 ? center : [0, 0]} zoom={filteredLocations.length > 0 ? 5 : 2} scrollWheelZoom={true} style={{ height: '100%', width: '100%' }}>
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -1853,12 +2071,154 @@ function StatCard({ label, value, icon, color }: { label: string, value: number,
   );
 }
 
+function DeleteConfirmationModal({ 
+  onConfirm, 
+  onCancel, 
+  title, 
+  message, 
+  isDeleting 
+}: { 
+  onConfirm: () => void, 
+  onCancel: () => void, 
+  title: string, 
+  message: string,
+  isDeleting: boolean
+}) {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-[#141414]/80 backdrop-blur-sm">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white border-2 border-[#141414] w-full max-w-md overflow-hidden relative shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+      >
+        <div className="bg-[#141414] text-white p-4 flex justify-between items-center">
+          <h2 className="text-sm font-bold uppercase tracking-tight flex items-center gap-2">
+            <AlertTriangle size={16} className="text-yellow-400" />
+            {title}
+          </h2>
+          <button onClick={onCancel} className="p-1 hover:bg-white/10 transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+        
+        <div className="p-6">
+          <p className="text-xs font-mono text-gray-600 mb-6 leading-relaxed">
+            {message}
+          </p>
+          
+          <div className="flex gap-4">
+            <button 
+              onClick={onCancel}
+              className="flex-1 py-3 px-4 border border-[#141414] text-[#141414] text-[10px] font-bold uppercase tracking-widest hover:bg-gray-100 transition-all font-mono"
+            >
+              Cancel
+            </button>
+            <button 
+              onClick={onConfirm}
+              disabled={isDeleting}
+              className="flex-1 py-3 px-4 bg-red-600 text-white text-[10px] font-bold uppercase tracking-widest hover:bg-red-700 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono flex items-center justify-center gap-2"
+            >
+              {isDeleting ? <RotateCw size={12} className="animate-spin" /> : <Trash2 size={12} />}
+              {isDeleting ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?: string | null, onCloseModal?: () => void }) {
   const { profile, canEditCustomers } = useAuth();
+  const { addToast } = useToast();
+  
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [search, setSearch] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchCustomers = useCallback(async () => {
+    if (!profile) return;
+    setRefreshing(true);
+    try {
+      const { data, error } = await supabase
+        .from('customers')
+        .select('*')
+        .order('name');
+      
+      if (error) throw error;
+      
+      const mappedCustomers = (data as any[]).map(c => ({
+        ...c,
+        invoiceDate: c.invoice_date,
+        invoiceNumber: c.invoice_number,
+        invoiceAmount: c.invoice_amount,
+        createdAt: c.created_at
+      })) as Customer[];
+      setCustomers(mappedCustomers);
+    } catch (err) {
+      handleSupabaseError(err, OperationType.LIST, 'customers');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    fetchCustomers();
+
+    const subscription = supabase
+      .channel('customers_changes_view')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => fetchCustomers())
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [fetchCustomers]);
+
+  const confirmDelete = async () => {
+    if (!customerToDelete) return;
+    const targetId = customerToDelete.id;
+    const targetName = customerToDelete.name;
+
+    setIsDeleting(targetId);
+    try {
+      const { error } = await supabase
+        .from('customers')
+        .delete()
+        .eq('id', targetId);
+
+      if (error) throw error;
+
+      // Optimistic update
+      setCustomers(prev => prev.filter(c => c.id !== targetId));
+      
+      addToast("Customer deleted successfully", "success");
+      
+      // Auto refresh/sync
+      await fetchCustomers();
+
+      if (profile) {
+        logAudit(profile.uid, profile.name, 'DELETE', 'Customer', targetId, `Deleted customer: ${targetName}`).catch(console.error);
+      }
+      
+      setCustomerToDelete(null);
+    } catch (err) {
+      handleSupabaseError(err, OperationType.DELETE, 'customers');
+      // Sync on failure too
+      fetchCustomers();
+    } finally {
+      setIsDeleting(null);
+    }
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent, customer: Customer) => {
+    e.stopPropagation();
+    setCustomerToDelete(customer);
+  };
 
   useEffect(() => {
     if (initialCustomerId && customers.length > 0) {
@@ -1868,40 +2228,6 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
       }
     }
   }, [initialCustomerId, customers]);
-
-  const fetchCustomers = useCallback(async () => {
-    if (!profile) return;
-    const { data, error } = await supabase
-      .from('customers')
-      .select('*')
-      .order('name');
-    
-    if (error) {
-      handleSupabaseError(error, OperationType.LIST, 'customers');
-    } else {
-      const mappedCustomers = (data as any[]).map(c => ({
-        ...c,
-        invoiceDate: c.invoice_date,
-        invoiceNumber: c.invoice_number,
-        invoiceAmount: c.invoice_amount,
-        createdAt: c.created_at
-      })) as Customer[];
-      setCustomers(mappedCustomers);
-    }
-  }, [profile]);
-
-  useEffect(() => {
-    fetchCustomers();
-
-    const subscription = supabase
-      .channel('customers_changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => fetchCustomers())
-      .subscribe();
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [fetchCustomers]);
 
   const filtered = customers.filter(c => 
     c.name.toLowerCase().includes(search.toLowerCase()) || 
@@ -1923,14 +2249,24 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        {canEditCustomers && (
+        <div className="flex items-center gap-2">
           <button 
-            onClick={() => setIsAdding(true)}
-            className="px-4 py-2 bg-[#141414] text-white text-xs font-bold flex items-center gap-2 hover:bg-gray-800 transition-all"
+            onClick={() => fetchCustomers()}
+            disabled={refreshing}
+            className="p-2 border border-[#141414] hover:bg-gray-100 transition-all disabled:opacity-50 flex items-center justify-center bg-white"
+            title="Refresh List"
           >
-            <Plus size={16} /> ADD CUSTOMER
+            <RotateCw size={16} className={refreshing ? 'animate-spin' : ''} />
           </button>
-        )}
+          {canEditCustomers && (
+            <button 
+              onClick={() => setIsAdding(true)}
+              className="px-4 py-2 bg-[#141414] text-white text-xs font-bold flex items-center gap-2 hover:bg-gray-800 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-1 active:translate-y-1 active:shadow-none"
+            >
+              <Plus size={16} /> ADD CUSTOMER
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
@@ -1967,9 +2303,21 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
                   {new Date(c.createdAt).toLocaleDateString()}
                 </td>
                 <td className="p-4 text-right">
-                  <button className="p-2 hover:bg-gray-200 transition-colors">
-                    <ChevronRight size={16} />
-                  </button>
+                  <div className="flex justify-end items-center gap-2">
+                    {canEditCustomers && (
+                      <button 
+                        onClick={(e) => handleDeleteClick(e, c)}
+                        disabled={isDeleting === c.id}
+                        className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50"
+                        title="Delete Customer"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                    <button className="p-2 hover:bg-gray-200 transition-colors">
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -1978,6 +2326,15 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
       </div>
 
       {isAdding && <AddCustomerModal onClose={() => setIsAdding(false)} onSuccess={fetchCustomers} />}
+      {customerToDelete && (
+        <DeleteConfirmationModal
+          title="Delete Customer"
+          message={`Are you sure you want to delete ${customerToDelete.name}? This will remove the customer records. Associated machinery and logs may prevent deletion if they exist.`}
+          onConfirm={confirmDelete}
+          onCancel={() => setCustomerToDelete(null)}
+          isDeleting={isDeleting === customerToDelete.id}
+        />
+      )}
       {selectedCustomer && (
         <CustomerDetailModal 
           customer={selectedCustomer} 
@@ -1991,9 +2348,163 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
   );
 }
 
+function MachineryTypeManagerModal({ onClose }: { onClose: () => void }) {
+  const { machineryTypes, addMachineryType, updateMachineryType, deleteMachineryType, tableExists } = useMachineryTypes();
+  const [newTypeName, setNewTypeName] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTypeName.trim()) return;
+    if (!tableExists) {
+      alert("Database table 'machinery_types' not found. Please create it first to save custom types.");
+      return;
+    }
+    await addMachineryType(newTypeName.trim());
+    setNewTypeName('');
+  };
+
+  const handleUpdate = async (id: string) => {
+    if (!editName.trim()) return;
+    if (id.startsWith('default-') || id.startsWith('fatal-default-')) {
+      alert("Cannot edit default types. Please add a new type instead.");
+      setEditingId(null);
+      return;
+    }
+    await updateMachineryType(id, editName.trim());
+    setEditingId(null);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-[#141414]/80 backdrop-blur-sm">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white border-2 border-[#141414] w-full max-w-lg overflow-hidden relative shadow-[8px_8px_0px_0px_rgba(20,20,20,1)]"
+      >
+        <div className="bg-[#141414] text-white p-4 flex justify-between items-center font-mono">
+          <h2 className="text-sm font-bold uppercase tracking-widest flex items-center gap-2">
+            <Settings2 size={16} /> Manage Machinery Types
+          </h2>
+          <button onClick={onClose} className="p-1 hover:bg-white/10 transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+        
+        <div className="p-6 space-y-6">
+          {!tableExists && (
+            <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-mono">
+              <div className="flex items-center gap-2 mb-2 font-bold uppercase">
+                <AlertTriangle size={14} /> Database Table Missing
+              </div>
+              <p className="mb-2">The <code className="bg-amber-100 px-1">machinery_types</code> table was not found in your Supabase database. You are seeing fallback defaults.</p>
+              <p className="mb-2">To fix this and enable custom types, run this SQL in your Supabase SQL Editor:</p>
+              <pre className="p-2 bg-[#141414] text-white text-[10px] overflow-x-auto">
+{`CREATE TABLE machinery_types (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable RLS
+ALTER TABLE machinery_types ENABLE ROW LEVEL SECURITY;
+
+-- Allow all authenticated users to read
+CREATE POLICY "Allow public read" ON machinery_types FOR SELECT USING (true);
+
+-- Allow all authenticated users to insert/update/delete (adjust if needed)
+CREATE POLICY "Allow all for authenticated" ON machinery_types FOR ALL 
+USING (auth.role() = 'authenticated')
+WITH CHECK (auth.role() = 'authenticated');`}
+              </pre>
+            </div>
+          )}
+
+          <form onSubmit={handleAdd} className="flex gap-2">
+            <input 
+              type="text" 
+              placeholder="e.g. Combine Harvester"
+              className="flex-1 p-2 border-2 border-[#141414] text-sm font-mono focus:outline-none focus:bg-gray-50"
+              value={newTypeName}
+              disabled={!tableExists}
+              onChange={e => setNewTypeName(e.target.value)}
+            />
+            <button 
+              type="submit"
+              disabled={!tableExists || !newTypeName.trim()}
+              className="px-4 py-2 bg-[#141414] text-white text-xs font-bold uppercase tracking-widest hover:bg-gray-800 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+            >
+              <Plus size={16} /> ADD
+            </button>
+          </form>
+
+          <div className="max-h-[300px] overflow-y-auto space-y-2 pr-2">
+            {machineryTypes.map((type) => (
+              <div key={type.id} className="flex items-center gap-2 p-2 border border-gray-100 hover:border-[#141414] transition-colors">
+                {editingId === type.id ? (
+                  <>
+                    <input 
+                      type="text" 
+                      className="flex-1 p-1 border border-[#141414] text-xs font-mono focus:outline-none"
+                      value={editName}
+                      onChange={e => setEditName(e.target.value)}
+                      autoFocus
+                    />
+                    <button onClick={() => handleUpdate(type.id)} className="p-1 text-green-600 hover:bg-green-50" title="Save">
+                      <CheckCircle2 size={16} />
+                    </button>
+                    <button onClick={() => setEditingId(null)} className="p-1 text-red-600 hover:bg-red-50" title="Cancel">
+                      <X size={16} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="flex-1 text-xs font-mono font-bold">{type.name}</span>
+                    <div className="flex items-center gap-1">
+                      {!(type.id.startsWith('default-') || type.id.startsWith('fatal-default-')) && (
+                        <>
+                          <button 
+                            onClick={() => {
+                              setEditingId(type.id);
+                              setEditName(type.name);
+                            }} 
+                            className="p-1 text-gray-400 hover:text-[#141414] transition-colors"
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                          <button 
+                            onClick={() => {
+                              if (window.confirm(`Delete type "${type.name}"?`)) {
+                                deleteMachineryType(type.id);
+                              }
+                            }} 
+                            className="p-1 text-gray-400 hover:text-red-600 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </>
+                      )}
+                      {(type.id.startsWith('default-') || type.id.startsWith('fatal-default-')) && (
+                        <span className="text-[8px] font-bold text-gray-300 uppercase tracking-widest px-1 border border-gray-100">SYSTEM</span>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSuccess?: () => void }) {
   const { profile } = useAuth();
   const { addToast } = useToast();
+  const { machineryTypes } = useMachineryTypes();
+  const [showTypeManager, setShowTypeManager] = useState(false);
   const [formData, setFormData] = useState({ 
     name: '', email: '', phone: '', address: '',
     latitude: '', longitude: '',
@@ -2252,23 +2763,26 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Machine Type *</label>
+                        <div className="flex justify-between items-center mb-1">
+                          <label className="block text-[10px] font-bold tracking-widest text-gray-500 uppercase">Machine Type *</label>
+                          <button 
+                            type="button" 
+                            onClick={() => setShowTypeManager(true)}
+                            className="text-[8px] font-bold text-blue-600 hover:shadow-none hover:translate-y-px transition-all flex items-center gap-1 uppercase tracking-widest"
+                          >
+                            <Settings2 size={10} /> Manage Types
+                          </button>
+                        </div>
                         <select 
                           required={!!m.model || !!m.serialNumber}
-                          className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                          className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white font-bold"
                           value={m.type}
-                          onChange={e => updateMachineryRow(index, 'type', e.target.value as MachineryType)}
+                          onChange={e => updateMachineryRow(index, 'type', e.target.value)}
                         >
-                          <option value="Tractor">Tractor</option>
-                          <option value="Generator">Generator</option>
-                          <option value="Water pump">Water pump</option>
-                          <option value="Electric Motors">Electric Motors</option>
-                          <option value="Transformers">Transformers</option>
-                          <option value="Bow Mills">Bow Mills</option>
-                          <option value="Jaw Crusher">Jaw Crusher</option>
-                          <option value="Electric Compressors">Electric Compressors</option>
-                          <option value="Diesel Compressors">Diesel Compressors</option>
-                          <option value="Engines">Engines</option>
+                          <option value="">Select Type...</option>
+                          {machineryTypes.map(type => (
+                            <option key={type.id} value={type.name}>{type.name}</option>
+                          ))}
                         </select>
                       </div>
                       <div>
@@ -2359,6 +2873,7 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
             </button>
           </div>
         </form>
+        {showTypeManager && <MachineryTypeManagerModal onClose={() => setShowTypeManager(false)} />}
       </motion.div>
     </div>
   );
@@ -2371,6 +2886,7 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
   const [machinery, setMachinery] = useState<Machinery[]>([]);
   const [editingMachine, setEditingMachine] = useState<Machinery | null>(null);
   const [deletingMachine, setDeletingMachine] = useState<Machinery | null>(null);
+  const [isAddingMachinery, setIsAddingMachinery] = useState(false);
   const [formData, setFormData] = useState({ 
     name: customer.name, 
     email: customer.email || '', 
@@ -2692,7 +3208,15 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
           </div>
 
           <div className="space-y-4">
-            <h3 className="text-xs font-bold tracking-widest uppercase italic border-b border-[#141414] pb-2">Owned Machinery</h3>
+            <div className="flex justify-between items-center border-b border-[#141414] pb-2">
+              <h3 className="text-xs font-bold tracking-widest uppercase italic">Owned Machinery</h3>
+              <button 
+                onClick={() => setIsAddingMachinery(true)}
+                className="text-[10px] font-bold text-blue-600 hover:bg-blue-50 px-2 py-1 border border-blue-600 flex items-center gap-1 uppercase tracking-widest transition-colors"
+              >
+                <Plus size={12} /> Add Machinery
+              </button>
+            </div>
             <div className="space-y-3">
               {machinery.length === 0 ? (
                 <p className="text-[10px] text-gray-400 font-mono uppercase py-4 text-center border border-dashed border-gray-200">No machinery registered</p>
@@ -2741,6 +3265,7 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
           </div>
         </div>
         {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} />}
+        {isAddingMachinery && <AddMachineryModal initialCustomerId={customer.id} onClose={() => setIsAddingMachinery(false)} />}
         {deletingMachine && (
           <DeleteMachineryModal 
             machine={deletingMachine} 
@@ -3509,11 +4034,13 @@ function DeleteMachineryModal({ machine, onClose, onConfirm }: { machine: Machin
   );
 }
 
-function AddMachineryModal({ onClose }: { onClose: () => void }) {
+function AddMachineryModal({ onClose, initialCustomerId }: { onClose: () => void, initialCustomerId?: string }) {
   const { profile } = useAuth();
   const { addToast } = useToast();
+  const { machineryTypes } = useMachineryTypes();
+  const [showTypeManager, setShowTypeManager] = useState(false);
   const [formData, setFormData] = useState({ 
-    customerId: '', type: 'Tractor' as MachineryType, model: '', serialNumber: '', 
+    customerId: initialCustomerId || '', type: '', model: '', serialNumber: '', 
     purchaseDate: '', warrantyExpiry: '', nextServiceDueDate: '', status: 'Operational' as MachineryStatus 
   });
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -3589,7 +4116,8 @@ function AddMachineryModal({ onClose }: { onClose: () => void }) {
             <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Owner / Customer *</label>
             <select 
               required
-              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+              disabled={!!initialCustomerId}
+              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white disabled:bg-gray-100 disabled:italic"
               value={formData.customerId}
               onChange={e => setFormData({ ...formData, customerId: e.target.value })}
             >
@@ -3599,23 +4127,26 @@ function AddMachineryModal({ onClose }: { onClose: () => void }) {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Machine Type *</label>
+              <div className="flex justify-between items-center mb-1">
+                <label className="block text-[10px] font-bold tracking-widest text-gray-500 uppercase">Machine Type *</label>
+                <button 
+                  type="button" 
+                  onClick={() => setShowTypeManager(true)}
+                  className="text-[8px] font-bold text-blue-600 hover:shadow-none hover:translate-y-px transition-all flex items-center gap-1 uppercase tracking-widest"
+                >
+                  <Settings2 size={10} /> Manage Types
+                </button>
+              </div>
               <select 
                 required
-                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white font-bold"
                 value={formData.type}
-                onChange={e => setFormData({ ...formData, type: e.target.value as MachineryType })}
+                onChange={e => setFormData({ ...formData, type: e.target.value })}
               >
-                <option value="Tractor">Tractor</option>
-                <option value="Generator">Generator</option>
-                <option value="Water pump">Water pump</option>
-                <option value="Electric Motors">Electric Motors</option>
-                <option value="Transformers">Transformers</option>
-                <option value="Bow Mills">Bow Mills</option>
-                <option value="Jaw Crusher">Jaw Crusher</option>
-                <option value="Electric Compressors">Electric Compressors</option>
-                <option value="Diesel Compressors">Diesel Compressors</option>
-                <option value="Engines">Engines</option>
+                <option value="">Select Type...</option>
+                {machineryTypes.map(type => (
+                  <option key={type.id} value={type.name}>{type.name}</option>
+                ))}
               </select>
             </div>
             <div>
@@ -3671,6 +4202,19 @@ function AddMachineryModal({ onClose }: { onClose: () => void }) {
               />
             </div>
           </div>
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Initial Status *</label>
+            <select 
+              required
+              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white font-bold"
+              value={formData.status}
+              onChange={e => setFormData({ ...formData, status: e.target.value as MachineryStatus })}
+            >
+              <option value="Operational">Operational</option>
+              <option value="Due for Service">Due for Service</option>
+              <option value="Under Repair">Under Repair</option>
+            </select>
+          </div>
           <div className="flex gap-4 pt-4">
             <button 
               type="button" 
@@ -3688,6 +4232,7 @@ function AddMachineryModal({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+        {showTypeManager && <MachineryTypeManagerModal onClose={() => setShowTypeManager(false)} />}
       </motion.div>
     </div>
   );
