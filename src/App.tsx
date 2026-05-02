@@ -2186,6 +2186,43 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
 
     setIsDeleting(targetId);
     try {
+      // Manual Cascading Deletion to avoid foreign key violations (23503)
+      
+      // 1. Get all tickets for this customer
+      const { data: tickets } = await supabase
+        .from('service_tickets')
+        .select('id')
+        .eq('customer_id', targetId);
+      
+      if (tickets && tickets.length > 0) {
+        const ticketIds = tickets.map(t => t.id);
+        
+        // 2. Delete logs for these tickets
+        await supabase
+          .from('service_logs')
+          .delete()
+          .in('ticket_id', ticketIds);
+          
+        // 3. Delete notifications for these tickets (if any) - assuming table exists or ignoring error
+        await supabase
+          .from('service_notifications')
+          .delete()
+          .in('ticket_id', ticketIds);
+          
+        // 4. Delete tickets
+        await supabase
+          .from('service_tickets')
+          .delete()
+          .eq('customer_id', targetId);
+      }
+
+      // 5. Delete associated machinery
+      await supabase
+        .from('machinery')
+        .delete()
+        .eq('customer_id', targetId);
+
+      // 6. Finally delete the customer
       const { error } = await supabase
         .from('customers')
         .delete()
@@ -2196,22 +2233,23 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
       // Optimistic update
       setCustomers(prev => prev.filter(c => c.id !== targetId));
       
-      addToast("Customer deleted successfully", "success");
+      addToast("Customer and all associated data deleted successfully", "success");
       
-      // Auto refresh/sync
-      await fetchCustomers();
-
       if (profile) {
-        logAudit(profile.uid, profile.name, 'DELETE', 'Customer', targetId, `Deleted customer: ${targetName}`).catch(console.error);
+        logAudit(profile.uid, profile.name, 'DELETE', 'Customer', targetId, `Deleted customer and fleet: ${targetName}`).catch(console.error);
       }
+
+      // Explicit refresh for auto-reload
+      await fetchCustomers();
       
-      setCustomerToDelete(null);
-    } catch (err) {
-      handleSupabaseError(err, OperationType.DELETE, 'customers');
-      // Sync on failure too
-      fetchCustomers();
+    } catch (err: any) {
+      console.error("Delete customer error:", err);
+      addToast(err.message || "Failed to delete customer", "error");
+      // Sync to revert optimistic update
+      await fetchCustomers();
     } finally {
       setIsDeleting(null);
+      setCustomerToDelete(null);
     }
   };
 
@@ -3282,10 +3320,14 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
                   await logAudit(profile.uid, profile.name, 'DELETE', 'Machinery', deletingMachine.id, `Deleted machinery: ${deletingMachine.model} (${deletingMachine.serialNumber})`);
                 }
                 addToast(`Machinery ${deletingMachine.model} deleted successfully`, "success");
+              } catch (err: any) {
+                console.error("Delete machinery error:", err);
+                const errorMessage = err.code === '23503' 
+                  ? "Cannot delete machinery because it has associated service tickets or history logs. Please delete those first." 
+                  : (err.message || "Failed to delete machinery");
+                addToast(errorMessage, "error");
+              } finally {
                 setDeletingMachine(null);
-              } catch (err) {
-                addToast("Failed to delete machinery", "error");
-                handleSupabaseError(err, OperationType.DELETE, `machinery/${deletingMachine.id}`);
               }
             }} 
           />
@@ -3312,45 +3354,44 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
 
+  const fetchData = useCallback(async () => {
+    if (!profile) return;
+    // Fetch machinery
+    const { data: machData, error: machError } = await supabase
+      .from('machinery')
+      .select('*');
+    
+    if (machError) {
+      handleSupabaseError(machError, OperationType.LIST, 'machinery');
+    } else {
+      setMachinery(machData.map(m => ({
+        ...m,
+        customerId: m.customer_id || m.customerId,
+        serialNumber: m.serial_number || m.serialNumber,
+        purchaseDate: m.purchase_date || m.purchaseDate,
+        warrantyExpiry: m.warranty_expiry || m.warrantyExpiry,
+        lastServiceDate: m.last_service_date || m.lastServiceDate,
+        nextServiceDueDate: m.next_service_due_date || m.nextServiceDueDate
+      })) as Machinery[]);
+    }
+
+    // Fetch customers for the map
+    const { data: custData, error: custError } = await supabase
+      .from('customers')
+      .select('id, name');
+    
+    if (custError) {
+      handleSupabaseError(custError, OperationType.LIST, 'customers');
+    } else {
+      const map: Record<string, string> = {};
+      custData.forEach(d => map[d.id] = d.name);
+      setCustomers(map);
+    }
+  }, [profile]);
+
   useEffect(() => {
     if (!profile) return;
     
-    const fetchData = async () => {
-      // Fetch machinery
-      const { data: machData, error: machError } = await supabase
-        .from('machinery')
-        .select('*');
-      
-      if (machError) {
-        handleSupabaseError(machError, OperationType.LIST, 'machinery');
-      } else {
-        // Map snake_case to camelCase if necessary, or assume schema matches interface
-        // For now, let's assume we use the interface names in DB or map them
-        setMachinery(machData.map(m => ({
-          ...m,
-          customerId: m.customer_id || m.customerId,
-          serialNumber: m.serial_number || m.serialNumber,
-          purchaseDate: m.purchase_date || m.purchaseDate,
-          warrantyExpiry: m.warranty_expiry || m.warrantyExpiry,
-          lastServiceDate: m.last_service_date || m.lastServiceDate,
-          nextServiceDueDate: m.next_service_due_date || m.nextServiceDueDate
-        })) as Machinery[]);
-      }
-
-      // Fetch customers for the map
-      const { data: custData, error: custError } = await supabase
-        .from('customers')
-        .select('id, name');
-      
-      if (custError) {
-        handleSupabaseError(custError, OperationType.LIST, 'customers');
-      } else {
-        const map: Record<string, string> = {};
-        custData.forEach(d => map[d.id] = d.name);
-        setCustomers(map);
-      }
-    };
-
     fetchData();
 
     const machSub = supabase
@@ -3367,7 +3408,7 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
       machSub.unsubscribe();
       custSub.unsubscribe();
     };
-  }, [profile]);
+  }, [profile, fetchData]);
 
   const handleDownloadReport = async (m: Machinery) => {
     setLoadingReport(m.id);
@@ -3515,6 +3556,32 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
 
   const handleDeleteMachinery = async (m: Machinery) => {
     try {
+      // 1. Delete associated logs for tickets of this machine
+      const { data: tickets } = await supabase
+        .from('service_tickets')
+        .select('id')
+        .eq('machinery_id', m.id);
+        
+      if (tickets && tickets.length > 0) {
+        const ticketIds = tickets.map(t => t.id);
+        await supabase
+          .from('service_logs')
+          .delete()
+          .in('ticket_id', ticketIds);
+          
+        await supabase
+          .from('service_notifications')
+          .delete()
+          .in('ticket_id', ticketIds);
+          
+        // 2. Delete tickets
+        await supabase
+          .from('service_tickets')
+          .delete()
+          .eq('machinery_id', m.id);
+      }
+
+      // 3. Delete the machinery itself
       const { error } = await supabase
         .from('machinery')
         .delete()
@@ -3525,11 +3592,18 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
       if (profile) {
         await logAudit(profile.uid, profile.name, 'DELETE', 'Machinery', m.id, `Deleted machinery: ${m.model} (${m.serialNumber})`);
       }
-      addToast(`Machinery ${m.model} deleted successfully`, "success");
+      addToast(`Machinery ${m.model} and associated tickets deleted successfully`, "success");
+      
+      // Auto reload/refresh trigger
+      setMachinery(prev => prev.filter(item => item.id !== m.id));
+    } catch (err: any) {
+      console.error("Delete machinery error:", err);
+      const errorMessage = err.code === '23503' 
+        ? "Cannot delete machinery because it has associated service tickets or history logs. Please delete those first." 
+        : (err.message || "Failed to delete machinery");
+      addToast(errorMessage, "error");
+    } finally {
       setDeletingMachine(null);
-    } catch (err) {
-      addToast("Failed to delete machinery", "error");
-      handleSupabaseError(err, OperationType.DELETE, `machinery/${m.id}`);
     }
   };
 
@@ -3757,8 +3831,8 @@ function MachineryView({ onViewHistory, onViewCustomer }: { onViewHistory?: (id:
       })}
     </div>
 
-      {isAdding && <AddMachineryModal onClose={() => setIsAdding(false)} />}
-      {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} />}
+      {isAdding && <AddMachineryModal onClose={() => setIsAdding(false)} onSuccess={fetchData} />}
+      {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} onSuccess={fetchData} />}
       {deletingMachine && (
         <DeleteMachineryModal 
           machine={deletingMachine} 
@@ -3790,7 +3864,7 @@ function FilterButton({ active, onClick, label, status }: { active: boolean, onC
   );
 }
 
-function EditMachineryModal({ machine, onClose }: { machine: Machinery, onClose: () => void }) {
+function EditMachineryModal({ machine, onClose, onSuccess }: { machine: Machinery, onClose: () => void, onSuccess?: () => void }) {
   const { profile } = useAuth();
   const { addToast } = useToast();
   const [formData, setFormData] = useState({ ...machine });
@@ -3859,6 +3933,7 @@ function EditMachineryModal({ machine, onClose }: { machine: Machinery, onClose:
       }
       
       addToast(`Machinery ${formData.model} updated successfully`, "success");
+      onSuccess?.();
       onClose();
     } catch (err) {
       addToast("Failed to update machinery", "error");
@@ -4034,7 +4109,7 @@ function DeleteMachineryModal({ machine, onClose, onConfirm }: { machine: Machin
   );
 }
 
-function AddMachineryModal({ onClose, initialCustomerId }: { onClose: () => void, initialCustomerId?: string }) {
+function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose: () => void, initialCustomerId?: string, onSuccess?: () => void }) {
   const { profile } = useAuth();
   const { addToast } = useToast();
   const { machineryTypes } = useMachineryTypes();
@@ -4094,6 +4169,7 @@ function AddMachineryModal({ onClose, initialCustomerId }: { onClose: () => void
         await logAudit(profile.uid, profile.name, 'CREATE', 'Machinery', data.id, `Created machinery: ${formData.model} (${formData.serialNumber})`);
       }
       addToast(`Machinery ${formData.model} registered successfully`, "success");
+      onSuccess?.();
       onClose();
     } catch (err) {
       addToast("Failed to register machinery", "error");
@@ -4248,90 +4324,88 @@ function TicketsView() {
   const [isAdding, setIsAdding] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<ServiceTicket | null>(null);
 
+  const fetchTickets = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('service_tickets')
+      .select('*')
+      .order('opened_at', { ascending: false });
+    
+    if (error) {
+      handleSupabaseError(error, OperationType.LIST, 'service_tickets');
+    } else {
+      const mappedTickets = (data as any[]).map(t => ({
+        ...t,
+        machineryId: t.machinery_id,
+        customerId: t.customer_id,
+        mechanicId: t.mechanic_id,
+        openedAt: t.opened_at,
+        closedAt: t.closed_at,
+        satisfactionScore: t.satisfaction_score
+      })) as ServiceTicket[];
+      setTickets(mappedTickets);
+    }
+  }, []);
+
+  const fetchMachinery = useCallback(async () => {
+    const { data, error } = await supabase.from('machinery').select('*');
+    if (error) {
+      handleSupabaseError(error, OperationType.LIST, 'machinery');
+    } else {
+      const map: Record<string, Machinery> = {};
+      data.forEach(d => {
+        map[d.id] = {
+          ...d,
+          customerId: d.customer_id,
+          serialNumber: d.serial_number,
+          purchaseDate: d.purchase_date,
+          warrantyExpiry: d.warranty_expiry,
+          lastServiceDate: d.last_service_date,
+          nextServiceDueDate: d.next_service_due_date
+        } as Machinery;
+      });
+      setMachinery(map);
+    }
+  }, []);
+
+  const fetchCustomers = useCallback(async () => {
+    const { data, error } = await supabase.from('customers').select('*');
+    if (error) {
+      handleSupabaseError(error, OperationType.LIST, 'customers');
+    } else {
+      const map: Record<string, Customer> = {};
+      data.forEach(d => {
+        map[d.id] = {
+          ...d,
+          invoiceDate: d.invoice_date,
+          invoiceNumber: d.invoice_number,
+          invoiceAmount: d.invoice_amount,
+          createdAt: d.created_at
+        } as Customer;
+      });
+      setCustomers(map);
+    }
+  }, []);
+
+  const fetchMechanics = useCallback(async () => {
+    const { data, error } = await supabase.from('users').select('*');
+    if (error) {
+      handleSupabaseError(error, OperationType.LIST, 'users');
+    } else {
+      const map: Record<string, UserProfile> = {};
+      data.forEach(d => {
+        map[d.uid] = { 
+          uid: d.uid, 
+          name: d.name,
+          email: d.email,
+          role: d.role,
+          createdAt: d.created_at 
+        } as UserProfile;
+      });
+      setMechanics(map);
+    }
+  }, []);
+
   useEffect(() => {
-    if (!profile) return;
-
-    const fetchTickets = async () => {
-      const { data, error } = await supabase
-        .from('service_tickets')
-        .select('*')
-        .order('opened_at', { ascending: false });
-      
-      if (error) {
-        handleSupabaseError(error, OperationType.LIST, 'service_tickets');
-      } else {
-        const mappedTickets = (data as any[]).map(t => ({
-          ...t,
-          machineryId: t.machinery_id,
-          customerId: t.customer_id,
-          mechanicId: t.mechanic_id,
-          openedAt: t.opened_at,
-          closedAt: t.closed_at,
-          satisfactionScore: t.satisfaction_score
-        })) as ServiceTicket[];
-        setTickets(mappedTickets);
-      }
-    };
-
-    const fetchMachinery = async () => {
-      const { data, error } = await supabase.from('machinery').select('*');
-      if (error) {
-        handleSupabaseError(error, OperationType.LIST, 'machinery');
-      } else {
-        const map: Record<string, Machinery> = {};
-        data.forEach(d => {
-          map[d.id] = {
-            ...d,
-            customerId: d.customer_id,
-            serialNumber: d.serial_number,
-            purchaseDate: d.purchase_date,
-            warrantyExpiry: d.warranty_expiry,
-            lastServiceDate: d.last_service_date,
-            nextServiceDueDate: d.next_service_due_date
-          } as Machinery;
-        });
-        setMachinery(map);
-      }
-    };
-
-    const fetchCustomers = async () => {
-      const { data, error } = await supabase.from('customers').select('*');
-      if (error) {
-        handleSupabaseError(error, OperationType.LIST, 'customers');
-      } else {
-        const map: Record<string, Customer> = {};
-        data.forEach(d => {
-          map[d.id] = {
-            ...d,
-            invoiceDate: d.invoice_date,
-            invoiceNumber: d.invoice_number,
-            invoiceAmount: d.invoice_amount,
-            createdAt: d.created_at
-          } as Customer;
-        });
-        setCustomers(map);
-      }
-    };
-
-    const fetchMechanics = async () => {
-      const { data, error } = await supabase.from('users').select('*');
-      if (error) {
-        handleSupabaseError(error, OperationType.LIST, 'users');
-      } else {
-        const map: Record<string, UserProfile> = {};
-        data.forEach(d => {
-          map[d.uid] = { 
-            uid: d.uid, 
-            name: d.name,
-            email: d.email,
-            role: d.role,
-            createdAt: d.created_at 
-          } as UserProfile;
-        });
-        setMechanics(map);
-      }
-    };
-
     fetchTickets();
     fetchMachinery();
     fetchCustomers();
@@ -4363,7 +4437,7 @@ function TicketsView() {
       custSub.unsubscribe();
       mechSub.unsubscribe();
     };
-  }, [profile]);
+  }, [fetchTickets, fetchMachinery, fetchCustomers, fetchMechanics]);
 
   const filteredTickets = tickets.filter(t => {
     const machine = machinery[t.machineryId];
@@ -4457,13 +4531,13 @@ function TicketsView() {
         )}
       </div>
 
-      {isAdding && <AddTicketModal onClose={() => setIsAdding(false)} />}
+      {isAdding && <AddTicketModal onClose={() => setIsAdding(false)} onSuccess={fetchTickets} />}
       {selectedTicket && <TicketDetailModal ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />}
     </motion.div>
   );
 }
 
-function AddTicketModal({ onClose }: { onClose: () => void }) {
+function AddTicketModal({ onClose, onSuccess }: { onClose: () => void, onSuccess?: () => void }) {
   const { profile } = useAuth();
   const { addToast } = useToast();
   const [formData, setFormData] = useState({ machineryId: '', description: '', mechanicId: profile?.uid || '' });
@@ -4691,6 +4765,7 @@ function AddTicketModal({ onClose }: { onClose: () => void }) {
       }
 
       addToast("Service ticket opened successfully" + (initialWorkDone ? " with initial log" : ""), "success");
+      onSuccess?.();
       onClose();
     } catch (err) {
       addToast("Failed to open ticket", "error");
