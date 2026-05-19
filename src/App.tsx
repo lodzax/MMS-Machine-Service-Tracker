@@ -242,6 +242,7 @@ interface AuthContextType {
   canEditTickets: boolean;
   canViewAuditLogs: boolean;
   canViewMechanics: boolean;
+  canViewAfterSales: boolean;
   canEditMechanics: boolean;
   canEditInventory: boolean;
 }
@@ -258,6 +259,7 @@ const AuthContext = createContext<AuthContextType>({
   canEditTickets: false,
   canViewAuditLogs: false,
   canViewMechanics: false,
+  canViewAfterSales: false,
   canEditMechanics: false,
   canEditInventory: false
 });
@@ -470,6 +472,7 @@ function AppContent() {
       canEditTickets: isAdmin || isManager || isTechnician,
       canViewAuditLogs: isAdmin,
       canViewMechanics: isAdmin || isManager,
+      canViewAfterSales: isAdmin || isManager,
       canEditMechanics: isAdmin,
       canEditInventory: isAdmin || isManager,
     };
@@ -669,7 +672,7 @@ function AppLayout({
   selectedCustomerId: string | null,
   setSelectedCustomerId: (id: string | null) => void
 }) {
-  const { profile, isAdmin, canViewAuditLogs, canEditMechanics, canViewMechanics } = useAuth();
+  const { profile, isAdmin, canViewAuditLogs, canEditMechanics, canViewMechanics, canViewAfterSales } = useAuth();
 
   return (
     <div className="min-h-screen bg-[#E4E3E0] flex font-sans text-[#141414]">
@@ -685,7 +688,9 @@ function AppLayout({
           <NavItem active={activeTab === 'map'} onClick={() => setActiveTab('map')} icon={<MapPin size={18} />} label="MAP VIEW" />
           <NavItem active={activeTab === 'customers'} onClick={() => setActiveTab('customers')} icon={<Users size={18} />} label="CUSTOMERS" />
           <NavItem active={activeTab === 'loyalty'} onClick={() => setActiveTab('loyalty')} icon={<Trophy size={18} />} label="LOYALTY & CRM" />
-          <NavItem active={activeTab === 'after_sales'} onClick={() => setActiveTab('after_sales')} icon={<Hammer size={18} />} label="AFTER SALES" />
+          {canViewAfterSales && (
+            <NavItem active={activeTab === 'after_sales'} onClick={() => setActiveTab('after_sales')} icon={<Hammer size={18} />} label="AFTER SALES" />
+          )}
           <NavItem active={activeTab === 'machinery'} onClick={() => setActiveTab('machinery')} icon={<Construction size={18} />} label="MACHINERY" />
           <NavItem active={activeTab === 'tickets'} onClick={() => setActiveTab('tickets')} icon={<Ticket size={18} />} label="SERVICE TICKETS" />
           <NavItem active={activeTab === 'branch_returns'} onClick={() => setActiveTab('branch_returns')} icon={<RotateCw size={18} />} label="BRANCH RETURNS" />
@@ -749,7 +754,7 @@ function AppLayout({
               />
             )}
             {activeTab === 'loyalty' && <LoyaltyView key="loyalty" />}
-            {activeTab === 'after_sales' && <AfterSalesView key="after_sales" />}
+            {activeTab === 'after_sales' && canViewAfterSales && <AfterSalesView key="after_sales" />}
             {activeTab === 'machinery' && (
               <MachineryView 
                 key="machinery" 
