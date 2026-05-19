@@ -6,6 +6,7 @@ export interface UserProfile {
   email: string;
   role: UserRole;
   createdAt: string;
+  avatarUrl?: string;
 }
 
 export interface Customer {
@@ -19,7 +20,36 @@ export interface Customer {
   invoiceDate?: string;
   invoiceNumber?: string;
   invoiceAmount?: number;
+  loyaltyPoints: number;
+  totalSpend: number;
+  changeCredit: number;
+  installationBalance: number;
   createdAt: string;
+}
+
+export type LoyaltyTransactionType = 'PURCHASE' | 'REDEMPTION' | 'CHANGE_CREDIT' | 'CREDIT_SPENT';
+
+export interface LoyaltyTransaction {
+  id: string;
+  customerId: string;
+  type: LoyaltyTransactionType;
+  amount: number;
+  points: number;
+  invoiceNumber?: string;
+  description: string;
+  timestamp: string;
+}
+
+export type AfterSalesTransactionType = 'INSTALLATION_FEE' | 'SERVICE_EXPENSE' | 'TOP_UP';
+
+export interface AfterSalesTransaction {
+  id: string;
+  customerId: string;
+  type: AfterSalesTransactionType;
+  amount: number;
+  invoiceNumber?: string;
+  description: string;
+  timestamp: string;
 }
 
 export type MachineryType = string;
@@ -37,6 +67,7 @@ export interface Machinery {
   type: MachineryType;
   model: string;
   serialNumber: string;
+  purchasePrice?: number;
   purchaseDate?: string;
   warrantyExpiry: string;
   lastServiceDate?: string;
@@ -102,3 +133,30 @@ export interface ServiceNotification {
   sentAt: string;
   message: string;
 }
+
+export interface BranchReturn {
+  id: string;
+  branchName: string;
+  machineryId: string;
+  customerId: string;
+  supervisorName: string;
+  returnDate: string;
+  description: string;
+  status: 'Received' | 'In Repair' | 'Ready' | 'Returned';
+  ticketId?: string;
+}
+
+export const BRANCHES = [
+  'Belmont',
+  'Esigodini 1',
+  'Esigodini 2',
+  'VID',
+  'Thobelani',
+  'Mthwakazi',
+  'Mswela',
+  'Maphisa',
+  'Gweru-Luton Rd',
+  'Gweru-Bradford',
+  'Junkshop',
+  'Tongogara'
+];

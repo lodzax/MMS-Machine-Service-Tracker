@@ -3,11 +3,11 @@ import {
   supabase, signIn, signUp, logout, onAuthStateChanged,
   OperationType, handleSupabaseError, logAudit
 } from './supabase';
-import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification, Part, UsedPart, MachineryTypeRecord } from './types';
+import { UserProfile, Customer, Machinery, ServiceTicket, ServiceLog, UserRole, MachineryType, MachineryStatus, TicketStatus, ServiceNotification, Part, UsedPart, MachineryTypeRecord, BranchReturn, BRANCHES, LoyaltyTransaction, AfterSalesTransaction, AfterSalesTransactionType } from './types';
 import { 
   LayoutDashboard, Users, Construction, Ticket, History, LogOut, Search, Plus, Trash2, Bell,
-  CheckCircle2, AlertCircle, Clock, ChevronRight, Settings, Wrench, Phone, Mail, MapPin, Calendar, User as UserIcon, Filter, FileText, Download, BarChart3,
-  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge, AlertTriangle, X, Edit2
+  CheckCircle2, AlertCircle, Clock, ChevronRight, ChevronLeft, Settings, Wrench, Phone, Mail, MapPin, Calendar, User as UserIcon, Filter, FileText, Download, BarChart3, Trophy,
+  Tractor, Zap, Droplets, Cpu, Box, RotateCw, Hammer, Wind, Fuel, Settings2, Gauge, AlertTriangle, X, Edit2, Copy
 } from 'lucide-react';
 
 // --- Contexts ---
@@ -32,6 +32,26 @@ const MachineryTypeContext = createContext<MachineryTypeContextType>({
   deleteMachineryType: async () => {},
   refreshMachineryTypes: async () => {},
 });
+
+const getAvatarUrl = (name: string) => {
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=141414&color=fff&bold=true`;
+};
+
+function UserAvatar({ name, size = 32, className = "" }: { name: string, size?: number, className?: string }) {
+  return (
+    <div 
+      className={`rounded-full overflow-hidden border border-[#141414] bg-gray-100 flex-shrink-0 ${className}`}
+      style={{ width: size, height: size }}
+    >
+      <img 
+        src={getAvatarUrl(name)} 
+        alt={name}
+        className="w-full h-full object-cover"
+        referrerPolicy="no-referrer"
+      />
+    </div>
+  );
+}
 
 const useMachineryTypes = () => useContext(MachineryTypeContext);
 
@@ -643,8 +663,8 @@ function AppLayout({
   setSelectedCustomerId
 }: { 
   activeTab: string, 
-  setActiveTab: (tab: string) => void, 
-  selectedMachineId: string | null, 
+  setActiveTab: (tab: string) => void,
+  selectedMachineId: string | null,
   setSelectedMachineId: (id: string | null) => void,
   selectedCustomerId: string | null,
   setSelectedCustomerId: (id: string | null) => void
@@ -664,8 +684,11 @@ function AppLayout({
           <NavItem active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard size={18} />} label="DASHBOARD" />
           <NavItem active={activeTab === 'map'} onClick={() => setActiveTab('map')} icon={<MapPin size={18} />} label="MAP VIEW" />
           <NavItem active={activeTab === 'customers'} onClick={() => setActiveTab('customers')} icon={<Users size={18} />} label="CUSTOMERS" />
+          <NavItem active={activeTab === 'loyalty'} onClick={() => setActiveTab('loyalty')} icon={<Trophy size={18} />} label="LOYALTY & CRM" />
+          <NavItem active={activeTab === 'after_sales'} onClick={() => setActiveTab('after_sales')} icon={<Hammer size={18} />} label="AFTER SALES" />
           <NavItem active={activeTab === 'machinery'} onClick={() => setActiveTab('machinery')} icon={<Construction size={18} />} label="MACHINERY" />
           <NavItem active={activeTab === 'tickets'} onClick={() => setActiveTab('tickets')} icon={<Ticket size={18} />} label="SERVICE TICKETS" />
+          <NavItem active={activeTab === 'branch_returns'} onClick={() => setActiveTab('branch_returns')} icon={<RotateCw size={18} />} label="BRANCH RETURNS" />
           <NavItem active={activeTab === 'inventory'} onClick={() => setActiveTab('inventory')} icon={<Box size={18} />} label="INVENTORY" />
           <NavItem active={activeTab === 'history'} onClick={() => { setSelectedMachineId(null); setActiveTab('history'); }} icon={<History size={18} />} label="SERVICE HISTORY" />
           {canViewMechanics && (
@@ -680,9 +703,7 @@ function AppLayout({
         </nav>
         <div className="p-4 border-t border-[#141414]">
           <div className="flex items-center gap-3 mb-4 p-2">
-            <div className="w-8 h-8 bg-[#141414] text-white rounded-full flex items-center justify-center text-xs font-bold">
-              {profile?.name.charAt(0)}
-            </div>
+            <UserAvatar name={profile?.name || 'User'} size={32} />
             <div className="overflow-hidden">
               <p className="text-xs font-bold truncate uppercase">{profile?.name}</p>
               <p className="text-[10px] text-gray-500 font-mono uppercase">{profile?.role}</p>
@@ -712,7 +733,13 @@ function AppLayout({
 
         <div className="p-8">
           <AnimatePresence mode="wait">
-            {activeTab === 'dashboard' && <Dashboard key="dashboard" />}
+            {activeTab === 'dashboard' && (
+              <Dashboard 
+                key="dashboard" 
+                setActiveTab={setActiveTab} 
+                setSelectedMachineId={setSelectedMachineId} 
+              />
+            )}
             {activeTab === 'map' && <MapView key="map" />}
             {activeTab === 'customers' && (
               <CustomersView 
@@ -721,6 +748,8 @@ function AppLayout({
                 onCloseModal={() => setSelectedCustomerId(null)} 
               />
             )}
+            {activeTab === 'loyalty' && <LoyaltyView key="loyalty" />}
+            {activeTab === 'after_sales' && <AfterSalesView key="after_sales" />}
             {activeTab === 'machinery' && (
               <MachineryView 
                 key="machinery" 
@@ -729,6 +758,7 @@ function AppLayout({
               />
             )}
             {activeTab === 'tickets' && <TicketsView key="tickets" />}
+            {activeTab === 'branch_returns' && <BranchReturnsView key="branch_returns" />}
             {activeTab === 'inventory' && <InventoryView key="inventory" />}
             {activeTab === 'history' && (
               <HistoryView 
@@ -757,8 +787,15 @@ function AuditLogsView() {
   const [triggering, setTriggering] = useState(false);
   const [activeTab, setActiveTab] = useState<'audit' | 'notifications'>('audit');
   const [search, setSearch] = useState('');
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'timestamp', direction: 'desc' });
   const [selectedNotif, setSelectedNotif] = useState<ServiceNotification | null>(null);
   const [emailMode, setEmailMode] = useState<'LIVE' | 'MOCK' | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 15;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, activeTab]);
 
   useEffect(() => {
     if (!profile) return;
@@ -772,7 +809,7 @@ function AuditLogsView() {
         .from('audit_logs')
         .select('*')
         .order('timestamp', { ascending: false })
-        .limit(100);
+        .limit(500);
       
       if (error) {
         handleSupabaseError(error, OperationType.LIST, 'audit_logs');
@@ -794,7 +831,7 @@ function AuditLogsView() {
         .from('notifications')
         .select('*')
         .order('sent_at', { ascending: false })
-        .limit(100);
+        .limit(500);
       
       if (error) {
         handleSupabaseError(error, OperationType.LIST, 'notifications');
@@ -866,6 +903,31 @@ function AuditLogsView() {
     n.message.toLowerCase().includes(search.toLowerCase())
   );
 
+  const sortedLogs = [...filteredLogs].sort((a, b) => {
+    const aValue = a[sortConfig.key];
+    const bValue = b[sortConfig.key];
+    
+    if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+    if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  const paginatedLogs = sortedLogs.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const paginatedNotifications = filteredNotifications.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+  const totalPages = activeTab === 'audit' ? Math.ceil(filteredLogs.length / itemsPerPage) : Math.ceil(filteredNotifications.length / itemsPerPage);
+
+  const handleSort = (key: string) => {
+    setSortConfig(prev => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const SortIndicator = ({ column }: { column: string }) => {
+    if (sortConfig.key !== column) return <span className="ml-1 text-gray-300">↕</span>;
+    return <span className="ml-1 text-[#141414]">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>;
+  };
+
   if (loading) return <div className="flex justify-center p-12"><LoadingSpinner /></div>;
 
   return (
@@ -923,22 +985,30 @@ function AuditLogsView() {
       {activeTab === 'audit' ? (
         <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
           <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
-            <h2 className="text-xs font-bold tracking-widest uppercase italic">System Audit Trail (Last 100 entries)</h2>
+            <h2 className="text-xs font-bold tracking-widest uppercase italic">System Audit Trail ({logs.length} Recent Entries)</h2>
             <FileText size={16} className="text-gray-400" />
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs font-mono">
               <thead>
                 <tr className="bg-gray-100 border-b border-[#141414]">
-                  <th className="p-3 font-bold uppercase tracking-widest">Timestamp</th>
-                  <th className="p-3 font-bold uppercase tracking-widest">User</th>
-                  <th className="p-3 font-bold uppercase tracking-widest">Action</th>
-                  <th className="p-3 font-bold uppercase tracking-widest">Entity</th>
+                  <th className="p-3 font-bold uppercase tracking-widest cursor-pointer hover:bg-gray-200" onClick={() => handleSort('timestamp')}>
+                    Timestamp <SortIndicator column="timestamp" />
+                  </th>
+                  <th className="p-3 font-bold uppercase tracking-widest cursor-pointer hover:bg-gray-200" onClick={() => handleSort('userName')}>
+                    User <SortIndicator column="userName" />
+                  </th>
+                  <th className="p-3 font-bold uppercase tracking-widest cursor-pointer hover:bg-gray-200" onClick={() => handleSort('action')}>
+                    Action <SortIndicator column="action" />
+                  </th>
+                  <th className="p-3 font-bold uppercase tracking-widest cursor-pointer hover:bg-gray-200" onClick={() => handleSort('entityType')}>
+                    Entity <SortIndicator column="entityType" />
+                  </th>
                   <th className="p-3 font-bold uppercase tracking-widest">Details</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredLogs.map(log => (
+                {paginatedLogs.map(log => (
                   <tr key={log.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
                     <td className="p-3 text-gray-500">{new Date(log.timestamp).toLocaleString()}</td>
                     <td className="p-3 font-bold">{log.userName}</td>
@@ -960,11 +1030,32 @@ function AuditLogsView() {
               </tbody>
             </table>
           </div>
+          <div className="p-4 bg-gray-50 border-t border-[#141414] flex items-center justify-between">
+            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+              Page {currentPage} of {totalPages || 1} ({filteredLogs.length} entries)
+            </span>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-1 border border-[#141414] disabled:opacity-30 transition-all hover:bg-gray-100"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <button 
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages || totalPages === 0}
+                className="p-1 border border-[#141414] disabled:opacity-30 transition-all hover:bg-gray-100"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
         </div>
       ) : (
         <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
           <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
-            <h2 className="text-xs font-bold tracking-widest uppercase italic">Notification History (Last 100 entries)</h2>
+            <h2 className="text-xs font-bold tracking-widest uppercase italic">Notification History ({notifications.length} Recent Entries)</h2>
             <Mail size={16} className="text-gray-400" />
           </div>
           <div className="overflow-x-auto">
@@ -979,12 +1070,12 @@ function AuditLogsView() {
                 </tr>
               </thead>
               <tbody>
-                {filteredNotifications.length === 0 ? (
+                {paginatedNotifications.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="p-8 text-center text-gray-400 italic">No notifications found</td>
                   </tr>
                 ) : (
-                  filteredNotifications.map(notif => (
+                  paginatedNotifications.map(notif => (
                     <tr 
                       key={notif.id} 
                       className="border-b border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer"
@@ -1013,6 +1104,27 @@ function AuditLogsView() {
                 )}
               </tbody>
             </table>
+          </div>
+          <div className="p-4 bg-gray-50 border-t border-[#141414] flex items-center justify-between">
+            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+              Page {currentPage} of {totalPages || 1} ({filteredNotifications.length} entries)
+            </span>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-1 border border-[#141414] disabled:opacity-30 transition-all hover:bg-gray-100"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <button 
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages || totalPages === 0}
+                className="p-1 border border-[#141414] disabled:opacity-30 transition-all hover:bg-gray-100"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1086,6 +1198,7 @@ function ReportsView() {
   const [mechanics, setMechanics] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [activeReportTab, setActiveReportTab] = useState<'service' | 'branch'>('service');
   
   // Filters
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('all');
@@ -1098,6 +1211,17 @@ function ReportsView() {
     customer: Customer;
     machinery: Machinery;
     logs: ServiceLog[];
+  }[]>([]);
+
+  const [branchReportResults, setBranchReportResults] = useState<{
+    id: string;
+    branchName: string;
+    model: string;
+    serialNumber: string;
+    machineryType: string;
+    returnDate: string;
+    count: number;
+    supervisorName: string;
   }[]>([]);
 
   useEffect(() => {
@@ -1198,75 +1322,183 @@ function ReportsView() {
     }
   };
 
+  const handleGenerateBranchReport = async () => {
+    setGenerating(true);
+    try {
+      let query = supabase.from('branch_returns').select(`
+        *,
+        machinery:machinery_id (*)
+      `).order('return_date', { ascending: false });
+
+      if (startDate) {
+        query = query.gte('return_date', startDate);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        query = query.lte('return_date', end.toISOString());
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        if (error.code === 'PGRST205') {
+          addToast("Branch Returns table not found. Please activate it first.", "error");
+          return;
+        }
+        throw error;
+      }
+
+      const results = (data || [] as any[]).map(r => ({
+        id: r.id,
+        branchName: r.branch_name,
+        model: r.machinery?.model || 'N/A',
+        serialNumber: r.machinery?.serial_number || 'N/A',
+        machineryType: r.machinery?.type || 'N/A',
+        returnDate: r.return_date,
+        count: 1, // Individual records for now, could be grouped
+        supervisorName: r.supervisor_name
+      }));
+
+      setBranchReportResults(results);
+      if (results.length === 0) {
+        addToast("No branch return records found for the selected dates", "info");
+      }
+    } catch (err) {
+      handleSupabaseError(err, OperationType.LIST, 'generate-branch-report');
+      addToast("Failed to generate branch returns report", "error");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const downloadPDF = () => {
-    if (reportResults.length === 0) return;
-    
-    const doc = new jsPDF();
     const timestamp = new Date().toLocaleString();
+    const doc = new jsPDF();
     
-    // Header
-    doc.setFontSize(20);
-    doc.setFont('helvetica', 'bold');
-    doc.text('CUSTOM SERVICE HISTORY REPORT', 105, 20, { align: 'center' });
-    
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`Generated on: ${timestamp}`, 105, 28, { align: 'center' });
-    doc.text(`Filters: Customer: ${selectedCustomerId === 'all' ? 'All' : customers.find(c => c.id === selectedCustomerId)?.name}, ` +
-             `Technician: ${selectedMechanicId === 'all' ? 'All' : mechanics.find(m => m.uid === selectedMechanicId)?.name}, ` +
-             `Range: ${startDate || 'Start'} to ${endDate || 'End'}`, 105, 34, { align: 'center' });
-    
-    let currentY = 45;
-
-    reportResults.forEach((res) => {
-      if (currentY > 250) {
-        doc.addPage();
-        currentY = 20;
-      }
-
-      doc.setFillColor(240, 240, 240);
-      doc.rect(20, currentY, 170, 8, 'F');
+    if (activeReportTab === 'service') {
+      if (reportResults.length === 0) return;
+      
+      // Header
+      doc.setFontSize(20);
       doc.setFont('helvetica', 'bold');
-      doc.text(`TICKET: ${res.ticket.description.toUpperCase()} (${res.ticket.status})`, 25, currentY + 5);
-      currentY += 12;
-
+      doc.text('SERVICE HISTORY REPORT', 105, 20, { align: 'center' });
+      
+      doc.setFontSize(10);
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9);
-      doc.text(`Customer: ${res.customer.name}`, 25, currentY);
-      doc.text(`Machinery: ${res.machinery.model} (${res.machinery.serialNumber})`, 100, currentY);
-      currentY += 6;
-      doc.text(`Opened: ${new Date(res.ticket.openedAt).toLocaleDateString()}`, 25, currentY);
-      if (res.ticket.closedAt) {
-        doc.text(`Closed: ${new Date(res.ticket.closedAt).toLocaleDateString()}`, 100, currentY);
-      }
-      currentY += 10;
+      doc.text(`Generated on: ${timestamp}`, 105, 28, { align: 'center' });
+      doc.text(`Filters: Customer: ${selectedCustomerId === 'all' ? 'All' : customers.find(c => c.id === selectedCustomerId)?.name}, ` +
+               `Technician: ${selectedMechanicId === 'all' ? 'All' : mechanics.find(m => m.uid === selectedMechanicId)?.name}, ` +
+               `Range: ${startDate || 'Start'} to ${endDate || 'End'}`, 105, 34, { align: 'center' });
+      
+      let currentY = 45;
 
-      // Logs for this ticket
-      if (res.logs.length > 0) {
-        autoTable(doc, {
-          startY: currentY,
-          head: [['Date', 'Technician', 'Work Done', 'Parts']],
-          body: res.logs.map(log => [
-            new Date(log.timestamp).toLocaleDateString(),
-            log.mechanicName,
-            log.workDone,
-            [
-              log.partsReplaced,
-              ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
-            ].filter(Boolean).join(', ')
-          ]),
-          margin: { left: 25 },
-          styles: { fontSize: 8 },
-          theme: 'grid'
-        });
-        currentY = (doc as any).lastAutoTable.finalY + 15;
-      } else {
-        doc.text('No service logs recorded for this ticket.', 25, currentY);
+      reportResults.forEach((res) => {
+        if (currentY > 250) {
+          doc.addPage();
+          currentY = 20;
+        }
+
+        doc.setFillColor(240, 240, 240);
+        doc.rect(20, currentY, 170, 8, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.text(`TICKET: ${res.ticket.description.toUpperCase()} (${res.ticket.status})`, 25, currentY + 5);
+        currentY += 12;
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.text(`Customer: ${res.customer.name}`, 25, currentY);
+        doc.text(`Machinery: ${res.machinery.model} (${res.machinery.serialNumber})`, 100, currentY);
+        currentY += 6;
+        doc.text(`Opened: ${new Date(res.ticket.openedAt).toLocaleDateString()}`, 25, currentY);
+        if (res.ticket.closedAt) {
+          doc.text(`Closed: ${new Date(res.ticket.closedAt).toLocaleDateString()}`, 100, currentY);
+        }
         currentY += 10;
-      }
-    });
 
-    doc.save(`Service_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+        // Logs for this ticket
+        if (res.logs.length > 0) {
+          autoTable(doc, {
+            startY: currentY,
+            head: [['Date', 'Technician', 'Work Done', 'Parts']],
+            body: res.logs.map(log => [
+              new Date(log.timestamp).toLocaleDateString(),
+              log.mechanicName,
+              log.workDone,
+              [
+                log.partsReplaced,
+                ...(log.usedParts || []).map(up => `${up.partName} (x${up.quantity})`)
+              ].filter(Boolean).join(', ')
+            ]),
+            margin: { left: 25 },
+            styles: { fontSize: 8 },
+            theme: 'grid'
+          });
+          currentY = (doc as any).lastAutoTable.finalY + 15;
+        } else {
+          doc.text('No service logs recorded for this ticket.', 25, currentY);
+          currentY += 10;
+        }
+      });
+      doc.save(`Service_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+    } else {
+      if (branchReportResults.length === 0) return;
+
+      doc.setFontSize(20);
+      doc.setFont('helvetica', 'bold');
+      doc.text('BRANCH RETURNS REPORT', 105, 20, { align: 'center' });
+      
+      doc.setFontSize(10);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Generated on: ${timestamp}`, 105, 28, { align: 'center' });
+      doc.text(`Range: ${startDate || 'Start'} to ${endDate || 'End'}`, 105, 34, { align: 'center' });
+
+      // Summary Table
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('SUMMARY BY MACHINERY TYPE', 20, 45);
+      
+      const summaryData = Object.entries(
+        branchReportResults.reduce((acc, curr) => {
+          const key = `${curr.machineryType}|${curr.model}`;
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>)
+      ).map(([key, count]) => {
+        const [type, model] = key.split('|');
+        return [type, model, count.toString()];
+      });
+
+      autoTable(doc, {
+        startY: 50,
+        head: [['Type', 'Model', 'Quantity']],
+        body: summaryData,
+        theme: 'striped',
+        headStyles: { fillColor: [20, 20, 20] }
+      });
+
+      // Detailed Table
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('DETAILED RETURN LOGS', 20, (doc as any).lastAutoTable.finalY + 15);
+
+      autoTable(doc, {
+        startY: (doc as any).lastAutoTable.finalY + 20,
+        head: [['Date', 'Branch', 'Model', 'Serial Number', 'Supervisor']],
+        body: branchReportResults.map(r => [
+          new Date(r.returnDate).toLocaleDateString(),
+          r.branchName,
+          r.model,
+          r.serialNumber,
+          r.supervisorName
+        ]),
+        theme: 'grid',
+        headStyles: { fillColor: [20, 20, 20] },
+        styles: { fontSize: 8 }
+      });
+
+      doc.save(`Branch_Returns_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+    }
+    
     addToast("Report downloaded successfully", "success");
   };
 
@@ -1274,33 +1506,54 @@ function ReportsView() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+      <div className="flex border-b-2 border-[#141414] mb-8">
+        <button 
+          onClick={() => { setActiveReportTab('service'); setReportResults([]); setBranchReportResults([]); }}
+          className={`px-8 py-3 text-xs font-black tracking-widest uppercase transition-all ${activeReportTab === 'service' ? 'bg-[#141414] text-white' : 'text-gray-400 hover:text-[#141414]'}`}
+        >
+          Service History
+        </button>
+        <button 
+          onClick={() => { setActiveReportTab('branch'); setReportResults([]); setBranchReportResults([]); }}
+          className={`px-8 py-3 text-xs font-black tracking-widest uppercase transition-all ${activeReportTab === 'branch' ? 'bg-[#141414] text-white' : 'text-gray-400 hover:text-[#141414]'}`}
+        >
+          Branch Returns
+        </button>
+      </div>
+
       <div className="bg-white border border-[#141414] p-6 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
-        <h2 className="text-xl font-bold tracking-tighter uppercase italic mb-6 border-b border-[#141414] pb-2">Report Configuration</h2>
+        <h2 className="text-xl font-bold tracking-tighter uppercase italic mb-6 border-b border-[#141414] pb-2">
+          {activeReportTab === 'service' ? 'Service Report Configuration' : 'Branch Returns Report Configuration'}
+        </h2>
         
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div>
-            <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Customer</label>
-            <select 
-              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
-              value={selectedCustomerId}
-              onChange={(e) => setSelectedCustomerId(e.target.value)}
-            >
-              <option value="all">ALL CUSTOMERS</option>
-              {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-          
-          <div>
-            <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Technician</label>
-            <select 
-              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
-              value={selectedMechanicId}
-              onChange={(e) => setSelectedMechanicId(e.target.value)}
-            >
-              <option value="all">ALL TECHNICIANS</option>
-              {mechanics.map(m => <option key={m.uid} value={m.uid}>{m.name}</option>)}
-            </select>
-          </div>
+          {activeReportTab === 'service' && (
+            <>
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Customer</label>
+                <select 
+                  className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+                  value={selectedCustomerId}
+                  onChange={(e) => setSelectedCustomerId(e.target.value)}
+                >
+                  <option value="all">ALL CUSTOMERS</option>
+                  {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              
+              <div>
+                <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Technician</label>
+                <select 
+                  className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+                  value={selectedMechanicId}
+                  onChange={(e) => setSelectedMechanicId(e.target.value)}
+                >
+                  <option value="all">ALL TECHNICIANS</option>
+                  {mechanics.map(m => <option key={m.uid} value={m.uid}>{m.name}</option>)}
+                </select>
+              </div>
+            </>
+          )}
 
           <div>
             <label className="block text-[10px] font-bold text-gray-500 mb-1 uppercase tracking-widest">Start Date</label>
@@ -1325,7 +1578,7 @@ function ReportsView() {
 
         <div className="mt-8 flex gap-4">
           <button 
-            onClick={handleGenerateReport}
+            onClick={activeReportTab === 'service' ? handleGenerateReport : handleGenerateBranchReport}
             disabled={generating}
             className="flex-1 py-3 bg-[#141414] text-white text-xs font-bold uppercase tracking-widest hover:bg-gray-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
           >
@@ -1333,7 +1586,7 @@ function ReportsView() {
             {generating ? 'GENERATING...' : 'GENERATE REPORT'}
           </button>
           
-          {reportResults.length > 0 && (
+          {(reportResults.length > 0 || branchReportResults.length > 0) && (
             <button 
               onClick={downloadPDF}
               className="px-8 py-3 border-2 border-[#141414] text-[#141414] text-xs font-bold uppercase tracking-widest hover:bg-gray-50 transition-all flex items-center gap-2"
@@ -1344,7 +1597,7 @@ function ReportsView() {
         </div>
       </div>
 
-      {reportResults.length > 0 && (
+      {reportResults.length > 0 && activeReportTab === 'service' && (
         <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
           <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
             <h2 className="text-xs font-bold tracking-widest uppercase italic">Report Preview ({reportResults.length} Tickets)</h2>
@@ -1390,6 +1643,85 @@ function ReportsView() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {branchReportResults.length > 0 && activeReportTab === 'branch' && (
+        <div className="space-y-6">
+          <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
+            <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
+              <h2 className="text-xs font-bold tracking-widest uppercase italic">Branch Returns Summary</h2>
+              <RotateCw size={16} className="text-gray-400" />
+            </div>
+            <div className="p-6">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b-2 border-[#141414]">
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Machinery Type</th>
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Model</th>
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Quantity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(
+                      branchReportResults.reduce((acc, curr) => {
+                        const key = `${curr.machineryType}|${curr.model}`;
+                        acc[key] = (acc[key] || 0) + 1;
+                        return acc;
+                      }, {} as Record<string, number>)
+                    ).map(([key, count]) => {
+                      const [type, model] = key.split('|');
+                      return (
+                        <tr key={key} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                          <td className="py-3 text-[10px] font-bold uppercase">{type}</td>
+                          <td className="py-3 text-[10px] font-bold uppercase">{model}</td>
+                          <td className="py-3 text-[10px] font-black uppercase tracking-widest text-blue-600">
+                            {count}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] overflow-hidden">
+            <div className="p-4 bg-gray-50 border-b border-[#141414] flex justify-between items-center">
+              <h2 className="text-xs font-bold tracking-widest uppercase italic">Detailed Return Logs</h2>
+              <FileText size={16} className="text-gray-400" />
+            </div>
+            <div className="p-6">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b-2 border-[#141414]">
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Date</th>
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Branch</th>
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Model</th>
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Serial Number</th>
+                      <th className="py-3 text-[10px] font-black uppercase tracking-widest">Supervisor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {branchReportResults.map((r) => (
+                      <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                        <td className="py-3 text-[10px] font-mono text-gray-500 whitespace-nowrap">
+                          {new Date(r.returnDate).toLocaleDateString()}
+                        </td>
+                        <td className="py-3 text-[10px] font-black uppercase tracking-widest">{r.branchName}</td>
+                        <td className="py-3 text-[10px] font-bold uppercase">{r.model}</td>
+                        <td className="py-3 text-[10px] font-mono text-gray-400 uppercase">{r.serialNumber}</td>
+                        <td className="py-3 text-[10px] font-bold uppercase">{r.supervisorName}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1829,7 +2161,13 @@ function NavItem({ active, onClick, icon, label }: { active: boolean, onClick: (
 
 // --- View Components ---
 
-function Dashboard() {
+function Dashboard({ 
+  setActiveTab, 
+  setSelectedMachineId 
+}: { 
+  setActiveTab: (tab: string) => void, 
+  setSelectedMachineId: (id: string | null) => void 
+}) {
   const { profile } = useAuth();
   const [stats, setStats] = useState({ 
     due: 0, 
@@ -1842,6 +2180,7 @@ function Dashboard() {
   const [dueMachinery, setDueMachinery] = useState<Machinery[]>([]);
   const [activeTickets, setActiveTickets] = useState<ServiceTicket[]>([]);
   const [lowStockParts, setLowStockParts] = useState<Part[]>([]);
+  const [selectedTicket, setSelectedTicket] = useState<ServiceTicket | null>(null);
 
   useEffect(() => {
     if (!profile) return;
@@ -1980,7 +2319,14 @@ function Dashboard() {
               <p className="p-8 text-center text-gray-400 text-xs font-mono">NO MACHINERY CURRENTLY DUE</p>
             ) : (
               dueMachinery.map(m => (
-                <div key={m.id} className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center group cursor-pointer">
+                <div 
+                  key={m.id} 
+                  onClick={() => {
+                    setSelectedMachineId(m.id);
+                    setActiveTab('history');
+                  }}
+                  className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center group cursor-pointer"
+                >
                   <div className="flex items-center gap-3">
                     <div className={`w-8 h-8 flex items-center justify-center border border-[#141414] shrink-0 ${
                       m.status === 'Operational' ? 'bg-green-50 text-green-600' : 
@@ -1989,7 +2335,7 @@ function Dashboard() {
                       {getMachineryIcon(m.type, 16)}
                     </div>
                     <div>
-                      <p className="font-bold text-sm">{m.model} <span className="text-[10px] text-gray-400 font-mono ml-2">#{m.serialNumber}</span></p>
+                      <p className="font-bold text-sm group-hover:text-red-600 transition-colors">{m.model} <span className="text-[10px] text-gray-400 font-mono ml-2">#{m.serialNumber}</span></p>
                       <p className="text-xs text-gray-500 uppercase tracking-tighter">{m.type}</p>
                     </div>
                   </div>
@@ -2014,9 +2360,13 @@ function Dashboard() {
               <p className="p-8 text-center text-gray-400 text-xs font-mono">NO ACTIVE TICKETS</p>
             ) : (
               activeTickets.map(t => (
-                <div key={t.id} className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center group cursor-pointer">
+                <div 
+                  key={t.id} 
+                  onClick={() => setSelectedTicket(t)}
+                  className="p-4 hover:bg-gray-50 transition-colors flex justify-between items-center group cursor-pointer"
+                >
                   <div>
-                    <p className="font-bold text-sm truncate max-w-[200px]">{t.description}</p>
+                    <p className="font-bold text-sm truncate max-w-[200px] group-hover:text-blue-600 transition-colors">{t.description}</p>
                     <p className="text-[10px] text-gray-500 font-mono uppercase">STATUS: {t.status}</p>
                   </div>
                   <div className="text-right">
@@ -2055,6 +2405,13 @@ function Dashboard() {
           </div>
         </div>
       </div>
+
+      {selectedTicket && (
+        <TicketDetailModal 
+          ticket={selectedTicket} 
+          onClose={() => setSelectedTicket(null)} 
+        />
+      )}
     </motion.div>
   );
 }
@@ -2156,6 +2513,9 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
         invoiceDate: c.invoice_date,
         invoiceNumber: c.invoice_number,
         invoiceAmount: c.invoice_amount,
+        loyaltyPoints: c.loyalty_points || 0,
+        totalSpend: c.total_spend || 0,
+        changeCredit: c.change_credit || 0,
         createdAt: c.created_at
       })) as Customer[];
       setCustomers(mappedCustomers);
@@ -2164,6 +2524,27 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
     } finally {
       setRefreshing(false);
     }
+  }, [profile]);
+
+  useEffect(() => {
+    // Check if CRM columns exist to warn user if migration is needed
+    const checkSchema = async () => {
+      try {
+        // Check for columns on customers
+        const { error: custErr } = await supabase.from('customers').select('loyalty_points, total_spend, change_credit').limit(1);
+        
+        // Check if loyalty_transactions exists
+        const { error: transErr } = await supabase.from('loyalty_transactions').select('*').limit(1);
+
+        if ((custErr && (custErr.code === 'PGRST204' || custErr.message.includes('Could not find'))) || 
+            (transErr && (transErr.code === 'PGRST204' || transErr.message.includes('Could not find')))) {
+          console.warn("CRM/Loyalty schema out of sync. Migration required.");
+        }
+      } catch (e) {
+        // Silently fail as this is just a pre-emptive check
+      }
+    };
+    if (profile) checkSchema();
   }, [profile]);
 
   useEffect(() => {
@@ -2314,6 +2695,9 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
               <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Name</th>
               <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Contact</th>
               <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Address</th>
+              <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Total Spend</th>
+              <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Points</th>
+              <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Credit</th>
               <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Registered</th>
               <th className="p-4"></th>
             </tr>
@@ -2336,6 +2720,20 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
                 </td>
                 <td className="p-4">
                   <p className="text-xs text-gray-500 truncate max-w-[200px]">{c.address || 'N/A'}</p>
+                </td>
+                <td className="p-4">
+                  <p className="text-xs font-mono font-bold">${c.totalSpend.toLocaleString()}</p>
+                </td>
+                <td className="p-4">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 rounded-full bg-amber-400"></div>
+                    <p className="text-xs font-bold">{c.loyaltyPoints}</p>
+                  </div>
+                </td>
+                <td className="p-4 space-y-1">
+                  <p className={`text-xs font-bold ${c.changeCredit > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                    ${c.changeCredit.toFixed(2)}
+                  </p>
                 </td>
                 <td className="p-4 font-mono text-[10px] text-gray-400">
                   {new Date(c.createdAt).toLocaleDateString()}
@@ -2380,6 +2778,7 @@ function CustomersView({ initialCustomerId, onCloseModal }: { initialCustomerId?
             setSelectedCustomer(null);
             onCloseModal?.();
           }} 
+          onUpdate={fetchCustomers}
         />
       )}
     </motion.div>
@@ -2391,6 +2790,8 @@ function MachineryTypeManagerModal({ onClose }: { onClose: () => void }) {
   const [newTypeName, setNewTypeName] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const [typeToDelete, setTypeToDelete] = useState<{id: string, name: string} | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2513,9 +2914,7 @@ WITH CHECK (auth.role() = 'authenticated');`}
                           </button>
                           <button 
                             onClick={() => {
-                              if (window.confirm(`Delete type "${type.name}"?`)) {
-                                deleteMachineryType(type.id);
-                              }
+                              setTypeToDelete({ id: type.id, name: type.name });
                             }} 
                             className="p-1 text-gray-400 hover:text-red-600 transition-colors"
                           >
@@ -2534,6 +2933,21 @@ WITH CHECK (auth.role() = 'authenticated');`}
           </div>
         </div>
       </motion.div>
+
+      {typeToDelete && (
+        <DeleteConfirmationModal
+          title="Delete Machinery Type"
+          message={`Are you sure you want to delete the type "${typeToDelete.name}"? This action cannot be undone and may affect machinery records linked to this type.`}
+          onConfirm={async () => {
+            setIsDeleting(true);
+            await deleteMachineryType(typeToDelete.id);
+            setIsDeleting(false);
+            setTypeToDelete(null);
+          }}
+          onCancel={() => setTypeToDelete(null)}
+          isDeleting={isDeleting}
+        />
+      )}
     </div>
   );
 }
@@ -2552,6 +2966,7 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
     type: 'Tractor' as MachineryType,
     model: '',
     serialNumber: '',
+    purchasePrice: '',
     purchaseDate: '',
     warrantyExpiry: '',
     nextServiceDueDate: '',
@@ -2564,6 +2979,7 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
       type: 'Tractor' as MachineryType,
       model: '',
       serialNumber: '',
+      purchasePrice: '',
       purchaseDate: '',
       warrantyExpiry: '',
       nextServiceDueDate: '',
@@ -2586,6 +3002,19 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
     e.preventDefault();
     setLoading(true);
     try {
+      // 0. Calculate Loyalty Points and Total Spend
+      let totalPurchaseSpend = 0;
+      let totalPurchasePoints = 0;
+      machineryList.forEach(m => {
+        if (m.model && m.serialNumber) {
+          const price = parseFloat(m.purchasePrice as any) || 0;
+          totalPurchaseSpend += price;
+          if (price >= 1000) {
+            totalPurchasePoints += Math.floor(price / 10); // 1 point per $10 spent on $1000+ items
+          }
+        }
+      });
+
       // 1. Create Customer
       const { data: customerData, error: customerError } = await supabase
         .from('customers')
@@ -2599,6 +3028,8 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
           invoice_date: formData.invoiceDate || null,
           invoice_number: formData.invoiceNumber || null,
           invoice_amount: formData.invoiceAmount ? parseFloat(formData.invoiceAmount) : 0,
+          loyalty_points: totalPurchasePoints,
+          total_spend: totalPurchaseSpend,
           created_at: new Date().toISOString()
         })
         .select()
@@ -2621,6 +3052,7 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
               type: m.type,
               model: m.model,
               serial_number: m.serialNumber,
+              purchase_price: parseFloat(m.purchasePrice as any) || 0,
               purchase_date: m.purchaseDate || formData.invoiceDate || null,
               warranty_expiry: m.warrantyExpiry || null,
               next_service_due_date: m.nextServiceDueDate || null,
@@ -2917,7 +3349,1047 @@ function AddCustomerModal({ onClose, onSuccess }: { onClose: () => void, onSucce
   );
 }
 
-function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClose: () => void }) {
+function LoyaltyView() {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [transactions, setTransactions] = useState<LoyaltyTransaction[]>([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const [showCaptureModal, setShowCaptureModal] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+
+  const fetchData = useCallback(async () => {
+    if (!profile) return;
+    setLoading(true);
+    try {
+      const { data: custData, error: custError } = await supabase
+        .from('customers')
+        .select('*')
+        .order('name');
+      
+      if (custError) throw custError;
+      
+      const mappedCustomers = (custData as any[]).map(c => ({
+        ...c,
+        invoiceDate: c.invoice_date,
+        invoiceNumber: c.invoice_number,
+        invoiceAmount: c.invoice_amount,
+        loyaltyPoints: c.loyalty_points || 0,
+        totalSpend: c.total_spend || 0,
+        changeCredit: c.change_credit || 0,
+        installationBalance: c.installation_balance || 0,
+        createdAt: c.created_at
+      })) as Customer[];
+      setCustomers(mappedCustomers);
+
+      const { data: transData, error: transError } = await supabase
+        .from('loyalty_transactions')
+        .select(`
+          *,
+          customers (name)
+        `)
+        .order('timestamp', { ascending: false })
+        .limit(50);
+      
+      if (transError) throw transError;
+      setTransactions((transData as any[]).map(t => ({
+        ...t,
+        customerId: t.customer_id,
+        invoiceNumber: t.invoice_number,
+      })));
+    } catch (err: any) {
+      if (err.code === 'PGRST204' || err.code === '42P01' || err.message?.includes('Could not find')) {
+        setSchemaError("Database schema out of sync. Please run the SQL migration script (supabase_schema.sql) in your Supabase SQL Editor.");
+      } else {
+        handleSupabaseError(err, OperationType.LIST, 'loyalty_transactions');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const filteredCustomers = customers.filter(c => 
+    c.name.toLowerCase().includes(search.toLowerCase()) || 
+    c.phone.includes(search)
+  );
+
+  const totalPoints = customers.reduce((sum, c) => sum + (c.loyaltyPoints || 0), 0);
+  const totalCredit = customers.reduce((sum, c) => sum + (c.changeCredit || 0), 0);
+
+  if (schemaError) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="flex flex-col items-center justify-center py-20 text-center space-y-6"
+      >
+        <div className="w-20 h-20 bg-amber-50 rounded-full flex items-center justify-center border-2 border-amber-200">
+          <AlertCircle size={40} className="text-amber-600" />
+        </div>
+        <div className="max-w-md space-y-2">
+          <h2 className="text-xl font-bold uppercase italic tracking-tighter">Database Migration Required</h2>
+          <p className="text-sm text-gray-500 leading-relaxed italic">
+            The CRM and Loyalty features require specific database tables and columns that are currently missing.
+          </p>
+        </div>
+        <div className="bg-[#141414] text-white p-6 border-2 border-[#141414] shadow-[8px_8px_0px_0px_rgba(20,20,20,0.3)] text-left max-w-lg">
+          <p className="text-[10px] font-bold tracking-widest uppercase mb-3 text-amber-400 italic">Instructions:</p>
+          <ol className="text-xs space-y-2 list-decimal list-inside font-medium tracking-tight">
+            <li>Find the <code className="bg-white/10 px-1 py-0.5 rounded">supabase_schema.sql</code> file in the project manager.</li>
+            <li>Copy the contents of the file.</li>
+            <li>Go to your Supabase Dashboard &gt; SQL Editor.</li>
+            <li>Paste and run the code to update your database.</li>
+          </ol>
+        </div>
+        <button 
+          onClick={() => {
+            setSchemaError(null);
+            fetchData();
+          }}
+          className="px-8 py-3 bg-[#141414] text-white text-xs font-bold uppercase tracking-widest hover:bg-gray-800 transition-all border border-[#141414] shadow-[4px_4px_0px_0px_rgba(20,20,20,0.2)]"
+        >
+          RETRY AFTER MIGRATION
+        </button>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-6"
+    >
+      <div className="flex justify-between items-end">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tighter uppercase italic flex items-center gap-3">
+            <Trophy size={28} className="text-amber-500" /> Loyalty & Rewards
+          </h2>
+          <p className="text-xs text-gray-500 mt-1 uppercase font-bold tracking-widest">Manage points, credit and customer loyalty programs</p>
+        </div>
+        <button 
+          onClick={() => setShowCaptureModal(true)}
+          className="px-6 py-3 bg-[#141414] text-white text-xs font-bold uppercase tracking-widest hover:bg-gray-800 transition-all flex items-center gap-2 shadow-[4px_4px_0px_0px_rgba(20,20,20,0.3)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
+        >
+          <Plus size={18} /> RECORD PURCHASE / CHANGE
+        </button>
+      </div>
+
+      <div className="grid grid-cols-4 gap-6">
+        <div className="bg-[#141414] text-white p-6 border border-[#141414] shadow-[6px_6px_0px_0px_rgba(0,0,0,0.1)]">
+          <p className="text-[10px] font-bold tracking-widest text-gray-400 uppercase mb-1">Total Outstanding Points</p>
+          <div className="flex items-center gap-3">
+            <Trophy size={20} className="text-amber-400" />
+            <p className="text-3xl font-bold tracking-tighter">{totalPoints.toLocaleString()}</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 border border-[#141414] shadow-[6px_6px_0px_0px_rgba(0,0,0,0.05)]">
+          <p className="text-[10px] font-bold tracking-widest text-gray-400 uppercase mb-1">Total Held Credit</p>
+          <div className="flex items-center gap-3">
+            <Droplets size={20} className="text-green-600" />
+            <p className="text-3xl font-bold tracking-tighter text-green-600">${totalCredit.toLocaleString()}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-6">
+        {/* Customer List */}
+        <div className="col-span-2 bg-white border border-[#141414] shadow-[6px_6px_0px_0px_rgba(20,20,20,1)] flex flex-col">
+          <div className="p-4 border-b border-[#141414] flex justify-between items-center flex-wrap gap-4">
+            <h3 className="text-xs font-bold tracking-widest uppercase italic">Customer Loyalty Status</h3>
+            <div className="relative flex-1 max-w-sm">
+              <input 
+                type="text" 
+                placeholder="SEARCH CUSTOMERS..." 
+                className="w-full pl-8 pr-4 py-2 border border-[#141414] text-xs font-mono focus:outline-none focus:bg-gray-50"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+              />
+              <Search className="absolute left-2.5 top-2.5 text-[#141414]" size={14} />
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="bg-gray-50 border-b border-[#141414]">
+                <tr>
+                  <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Customer</th>
+                  <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Points</th>
+                  <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Held Credit</th>
+                  <th className="p-4 text-[10px] font-bold tracking-widest uppercase italic">Total Spent</th>
+                  <th className="p-4"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 italic">
+                {filteredCustomers.map(c => (
+                  <tr key={c.id} className="hover:bg-gray-50">
+                    <td className="p-4">
+                      <p className="text-xs font-bold uppercase">{c.name}</p>
+                      <p className="text-[10px] text-gray-500 font-mono">{c.phone}</p>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-2 h-2 rounded-full bg-amber-400"></div>
+                        <p className="text-xs font-bold">{c.loyaltyPoints}</p>
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <p className={`text-xs font-bold ${c.changeCredit > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                        ${c.changeCredit.toFixed(2)}
+                      </p>
+                    </td>
+                    <td className="p-4">
+                      <p className="text-xs font-mono font-bold">${c.totalSpend.toLocaleString()}</p>
+                    </td>
+                    <td className="p-4 text-right">
+                      <button 
+                         onClick={() => {
+                           setSelectedCustomerId(c.id);
+                           setShowCaptureModal(true);
+                         }}
+                         className="px-3 py-1 bg-[#141414] text-white text-[9px] font-bold uppercase hover:bg-gray-800 transition-all border border-[#141414] shadow-[2px_2px_0px_0px_rgba(20,20,20,0.2)]"
+                      >
+                        RECORD
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Recent Transactions */}
+        <div className="bg-white border border-[#141414] shadow-[6px_6px_0px_0px_rgba(20,20,20,1)] flex flex-col h-[600px]">
+          <div className="p-4 border-b border-[#141414]">
+            <h3 className="text-xs font-bold tracking-widest uppercase italic flex items-center gap-2">
+              <History size={14} /> Recent Activities
+            </h3>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {transactions.map(t => (
+              <div key={t.id} className="p-3 border border-[#141414] space-y-2">
+                <div className="flex justify-between items-start">
+                  <span className={`text-[8px] font-bold px-2 py-0.5 border border-[#141414] uppercase ${
+                    t.type === 'PURCHASE' ? 'bg-blue-50 text-blue-600' : 
+                    t.type === 'REDEMPTION' ? 'bg-amber-50 text-amber-600' : 
+                    t.type === 'CHANGE_CREDIT' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'
+                  }`}>
+                    {t.type.replace('_', ' ')}
+                  </span>
+                  <span className="text-[9px] font-mono text-gray-400">
+                    {new Date(t.timestamp).toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase">{(t as any).customers?.name}</p>
+                  <p className="text-xs text-gray-600 mt-1">{t.description}</p>
+                  {t.invoiceNumber && (
+                    <div className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 bg-gray-50 border border-gray-200 text-[9px] font-mono text-gray-500 italic">
+                      <FileText size={10} /> {t.invoiceNumber}
+                    </div>
+                  )}
+                </div>
+                <div className="flex justify-between items-end border-t border-gray-100 pt-2">
+                   <div>
+                     {t.amount !== 0 && (
+                       <p className={`text-[10px] font-bold font-mono ${t.type.includes('SPENT') || t.type === 'REDEMPTION' ? 'text-red-500' : 'text-green-600'}`}>
+                         {t.amount > 0 ? '+' : ''}${t.amount.toFixed(2)}
+                       </p>
+                     )}
+                   </div>
+                   <div className="text-right">
+                     {t.points !== 0 && (
+                       <p className={`text-[10px] font-bold ${t.points > 0 ? 'text-amber-500' : 'text-gray-400'}`}>
+                         {t.points > 0 ? '+' : ''}{t.points} Pts
+                       </p>
+                     )}
+                   </div>
+                </div>
+              </div>
+            ))}
+            {transactions.length === 0 && (
+              <div className="h-full flex flex-col items-center justify-center text-gray-300 gap-4 py-20">
+                <History size={48} className="opacity-10" />
+                <p className="text-[10px] font-bold uppercase tracking-widest">No recent transactions</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {showCaptureModal && (
+        <CapturePurchaseModal 
+          customerId={selectedCustomerId} 
+          onClose={() => {
+            setShowCaptureModal(false);
+            setSelectedCustomerId(null);
+          }} 
+          onSuccess={fetchData}
+        />
+      )}
+    </motion.div>
+  );
+}
+
+function CapturePurchaseModal({ customerId, onClose, onSuccess }: { customerId?: string | null, onClose: () => void, onSuccess?: () => void }) {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    customerId: customerId || '',
+    amountPaid: '',
+    purchaseTotal: '',
+    invoiceNumber: '',
+    installationFee: '',
+    description: ''
+  });
+
+  useEffect(() => {
+    const fetchCustomers = async () => {
+      const { data, error } = await supabase.from('customers').select('*').order('name');
+      if (!error) {
+        setCustomers((data as any[]).map(c => ({
+          ...c,
+          loyaltyPoints: c.loyalty_points || 0,
+          totalSpend: c.total_spend || 0,
+          changeCredit: c.change_credit || 0
+        })) as Customer[]);
+      }
+    };
+    fetchCustomers();
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const customer = customers.find(c => c.id === formData.customerId);
+    if (!customer) return;
+
+    setLoading(true);
+    try {
+      const total = parseFloat(formData.purchaseTotal) || 0;
+      const paid = parseFloat(formData.amountPaid) || 0;
+      const installFee = parseFloat(formData.installationFee) || 0;
+      const change = Math.max(0, paid - total - installFee);
+      
+      let pointsEarned = 0;
+      if (total >= 1000) {
+        pointsEarned = Math.floor(total / 10);
+      }
+
+          // 1. Log Transaction
+      const { error: transError } = await supabase
+        .from('loyalty_transactions')
+        .insert({
+          customer_id: customer.id,
+          type: 'PURCHASE',
+          amount: total,
+          points: pointsEarned,
+          invoice_number: formData.invoiceNumber,
+          description: formData.description || `Purchase recorded: $${total.toLocaleString()}`
+        });
+      
+      if (transError) throw transError;
+
+      // 2. Log Installation Fee if > 0
+      if (installFee > 0) {
+        await supabase
+          .from('after_sales_transactions')
+          .insert({
+            customer_id: customer.id,
+            type: 'INSTALLATION_FEE',
+            amount: installFee,
+            invoice_number: formData.invoiceNumber,
+            description: `Installation fee for purchase ${formData.invoiceNumber || ''}`
+          });
+      }
+
+      // 3. Log Change as Credit if change > 0
+      if (change > 0) {
+        await supabase
+          .from('loyalty_transactions')
+          .insert({
+            customer_id: customer.id,
+            type: 'CHANGE_CREDIT',
+            amount: change,
+            points: 0,
+            invoice_number: formData.invoiceNumber,
+            description: `Change left as credit from purchase of $${total.toLocaleString()}`
+          });
+      }
+
+      // 4. Update Customer profile
+      const { error: custError } = await supabase
+        .from('customers')
+        .update({
+          total_spend: (customer.totalSpend || 0) + total,
+          loyalty_points: (customer.loyaltyPoints || 0) + pointsEarned,
+          change_credit: (customer.changeCredit || 0) + change,
+          installation_balance: (customer.installationBalance || 0) + installFee
+        })
+        .eq('id', customer.id);
+      
+      if (custError) throw custError;
+
+      addToast("Purchase recorded successfully", "success");
+      onSuccess?.();
+      onClose();
+    } catch (err) {
+      handleSupabaseError(err, OperationType.WRITE, 'loyalty');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white border-2 border-[#141414] p-8 max-w-md w-full shadow-[10px_10px_0px_0px_rgba(20,20,20,1)]"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <Trophy size={24} className="text-amber-500" />
+          <h2 className="text-xl font-bold tracking-tighter uppercase italic">Record Transaction</h2>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Select Customer *</label>
+            <select 
+              required
+              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white"
+              value={formData.customerId}
+              onChange={e => setFormData({ ...formData, customerId: e.target.value })}
+            >
+              <option value="">CHOOSE CUSTOMER...</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name} (${c.changeCredit.toFixed(2)} Credit)</option>)}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Invoice / Receipt #</label>
+              <input 
+                type="text" 
+                placeholder="INV-12345"
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                value={formData.invoiceNumber}
+                onChange={e => setFormData({ ...formData, invoiceNumber: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Purchase Total ($) *</label>
+              <input 
+                required
+                type="number" 
+                step="0.01"
+                placeholder="0.00"
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                value={formData.purchaseTotal}
+                onChange={e => setFormData({ ...formData, purchaseTotal: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Installation Fee ($)</label>
+            <input 
+              type="number" 
+              step="0.01"
+              placeholder="0.00"
+              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+              value={formData.installationFee}
+              onChange={e => setFormData({ ...formData, installationFee: e.target.value })}
+            />
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Amount Paid ($) *</label>
+            <input 
+              required
+              type="number" 
+              step="0.01"
+              placeholder="0.00"
+              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+              value={formData.amountPaid}
+              onChange={e => setFormData({ ...formData, amountPaid: e.target.value })}
+            />
+          </div>
+
+          {(parseFloat(formData.amountPaid) > parseFloat(formData.purchaseTotal)) && (
+            <div className="bg-green-50 border border-green-200 p-2 flex items-center gap-2">
+              <CheckCircle2 size={14} className="text-green-600" />
+              <p className="text-[10px] font-bold text-green-700 uppercase">
+                Change of ${(parseFloat(formData.amountPaid) - parseFloat(formData.purchaseTotal)).toFixed(2)} will be held as credit.
+              </p>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Optional Notes</label>
+            <textarea 
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none h-20"
+              placeholder="e.g. Parts purchase, balance payment..."
+              value={formData.description}
+              onChange={e => setFormData({ ...formData, description: e.target.value })}
+            />
+          </div>
+
+          <div className="flex gap-4 pt-4">
+            <button 
+              type="button" 
+              onClick={onClose}
+              className="flex-1 py-3 border border-[#141414] text-xs font-bold hover:bg-gray-50 transition-colors uppercase"
+            >
+              CANCEL
+            </button>
+            <button 
+              type="submit" 
+              disabled={loading}
+              className="flex-1 py-3 bg-[#141414] text-white text-xs font-bold hover:bg-gray-800 transition-colors disabled:opacity-50 uppercase shadow-[4px_4px_0px_0px_rgba(31,41,55,1)]"
+            >
+              {loading ? 'PROCESSING...' : 'RECORD TRANSACTION'}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
+
+function AfterSalesView() {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [transactions, setTransactions] = useState<AfterSalesTransaction[]>([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showRecordModal, setShowRecordModal] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
+
+  // Pagination & Filtering State
+  const [customerPage, setCustomerPage] = useState(1);
+  const [logPage, setLogPage] = useState(1);
+  const [balanceFilter, setBalanceFilter] = useState<'all' | 'positive' | 'negative'>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | AfterSalesTransactionType>('all');
+  const itemsPerPage = 10;
+  const logsPerPage = 5;
+
+  const fetchData = useCallback(async () => {
+    if (!profile) return;
+    setLoading(true);
+    try {
+      const { data: custData, error: custErr } = await supabase.from('customers').select('*').order('name');
+      if (custErr) throw custErr;
+      setCustomers((custData as any[]).map(c => ({
+        ...c,
+        invoiceDate: c.invoice_date,
+        invoiceNumber: c.invoice_number,
+        invoiceAmount: c.invoice_amount,
+        loyaltyPoints: c.loyalty_points || 0,
+        totalSpend: c.total_spend || 0,
+        changeCredit: c.change_credit || 0,
+        installationBalance: c.installation_balance || 0,
+        createdAt: c.created_at
+      })) as Customer[]);
+
+      const { data: transData, error: transErr } = await supabase
+        .from('after_sales_transactions')
+        .select('*, customers(name)')
+        .order('timestamp', { ascending: false });
+      if (transErr) throw transErr;
+      setTransactions((transData as any[]).map(t => ({
+        ...t,
+        customerId: t.customer_id,
+        invoiceNumber: t.invoice_number,
+      })));
+    } catch (err) {
+      handleSupabaseError(err, OperationType.LIST, 'after_sales_transactions');
+    } finally {
+      setLoading(false);
+    }
+  }, [profile]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Customer Filtering & Pagination
+  const filteredCustomers = customers.filter(c => {
+    const matchesSearch = c.name.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search);
+    const matchesBalance = balanceFilter === 'all' ? true : 
+                          balanceFilter === 'positive' ? c.installationBalance >= 0 : 
+                          c.installationBalance < 0;
+    return matchesSearch && matchesBalance;
+  });
+
+  const totalCustomerPages = Math.ceil(filteredCustomers.length / itemsPerPage);
+  const paginatedCustomers = filteredCustomers.slice((customerPage - 1) * itemsPerPage, customerPage * itemsPerPage);
+
+  // Logs Filtering & Pagination
+  const filteredTransactions = transactions.filter(t => {
+    return typeFilter === 'all' ? true : t.type === typeFilter;
+  });
+
+  const totalLogPages = Math.ceil(filteredTransactions.length / logsPerPage);
+  const paginatedTransactions = filteredTransactions.slice((logPage - 1) * logsPerPage, logPage * logsPerPage);
+
+  const topUpCount = customers.filter(c => c.installationBalance < 0).length;
+  const totalAmountDue = customers.reduce((acc, c) => c.installationBalance < 0 ? acc + Math.abs(c.installationBalance) : acc, 0);
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tighter uppercase italic flex items-center gap-3">
+            <Hammer size={28} className="text-[#141414]" /> After Sales & Installation
+          </h2>
+          <p className="text-xs text-gray-500 mt-1 uppercase font-bold tracking-widest text-[#141414]/60">Manage installation fees, maintenance expenses and followup services</p>
+        </div>
+        <div className="flex gap-4">
+           <button 
+             onClick={() => { setSelectedCustomerId(null); setShowRecordModal(true); }}
+             className="px-6 py-3 bg-[#141414] text-white text-xs font-bold uppercase tracking-widest hover:bg-gray-800 transition-all flex items-center gap-2 shadow-[4px_4px_0px_0px_rgba(20,20,20,0.3)]"
+           >
+             <Plus size={18} /> RECORD SERVICE EXPENSE
+           </button>
+        </div>
+      </div>
+
+      {topUpCount > 0 && (
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-red-50 border-2 border-red-600 p-4 flex flex-col md:flex-row items-center justify-between gap-4 shadow-[8px_8px_0px_0px_rgba(220,38,38,0.2)]"
+        >
+          <div className="flex items-center gap-4 text-red-600">
+            <div className="p-3 bg-red-600 text-white shadow-[4px_4px_0px_0px_rgba(220,38,38,0.3)]">
+              <AlertCircle size={24} className="animate-pulse" />
+            </div>
+            <div>
+              <p className="text-sm font-black uppercase italic tracking-tight">Attention Required: Top-up Needed</p>
+              <p className="text-xs font-bold uppercase font-mono opacity-80">{topUpCount} customers have negative service balances</p>
+            </div>
+          </div>
+          <div className="text-center md:text-right">
+             <p className="text-[10px] font-bold uppercase text-red-600/60 leading-none">Total Unfunded Expenses</p>
+             <p className="text-2xl font-black font-mono text-red-600 tracking-tighter">${totalAmountDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          </div>
+        </motion.div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 space-y-6">
+          <div className="bg-white border border-[#141414] shadow-[6px_6px_0px_0px_rgba(20,20,20,1)]">
+            <div className="p-4 border-b border-[#141414] flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <h3 className="text-xs font-bold uppercase tracking-widest italic text-[#141414]">Customer Service Balances</h3>
+              <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                <div className="relative flex-1 md:w-48">
+                  <input 
+                    type="text" 
+                    placeholder="SEARCH..." 
+                    className="w-full pl-8 pr-4 py-1.5 border border-[#141414] text-[10px] font-mono focus:outline-none"
+                    value={search}
+                    onChange={e => { setSearch(e.target.value); setCustomerPage(1); }}
+                  />
+                  <Search className="absolute left-2.5 top-2 text-[#141414]" size={12} />
+                </div>
+                <select 
+                  className="px-3 py-1.5 border border-[#141414] text-[10px] font-bold uppercase bg-white focus:outline-none"
+                  value={balanceFilter}
+                  onChange={e => { setBalanceFilter(e.target.value as any); setCustomerPage(1); }}
+                >
+                  <option value="all">ALL BALANCES</option>
+                  <option value="positive">POSITIVE ONLY</option>
+                  <option value="negative">TOP-UP REQUIRED</option>
+                </select>
+              </div>
+            </div>
+            <div className="overflow-x-auto min-h-[400px]">
+              <table className="w-full text-left">
+                <thead className="bg-gray-50 border-b border-[#141414]">
+                  <tr className="text-[10px] font-bold uppercase italic">
+                    <th className="p-4">Customer</th>
+                    <th className="p-4">Contact</th>
+                    <th className="p-4 text-right">Service Balance</th>
+                    <th className="p-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 italic">
+                  {paginatedCustomers.map(c => {
+                    const isNegative = c.installationBalance < 0;
+                    return (
+                      <tr key={c.id} className={`transition-colors text-xs border-l-4 ${isNegative ? 'bg-red-50/50 border-red-600 hover:bg-red-50' : 'border-transparent hover:bg-gray-50'}`}>
+                        <td className="p-4 font-bold uppercase">
+                          <div className="flex flex-col">
+                            <span>{c.name}</span>
+                            {c.invoiceNumber && <span className="text-[8px] text-gray-400 font-mono mt-0.5">INV: {c.invoiceNumber}</span>}
+                          </div>
+                        </td>
+                        <td className="p-4 font-mono">{c.phone}</td>
+                        <td className={`p-4 text-right font-bold font-mono ${isNegative ? 'text-red-600' : 'text-green-600'}`}>
+                          <div className="flex items-center justify-end gap-1.5">
+                            {isNegative && <AlertCircle size={10} className="text-red-500" />}
+                            <span>${c.installationBalance.toFixed(2)}</span>
+                          </div>
+                          {isNegative && <span className="block text-[8px] text-red-500 font-black uppercase mt-1 animate-pulse tracking-tight">TOP-UP REQUIRED</span>}
+                        </td>
+                        <td className="p-4 text-right">
+                          <button 
+                            onClick={() => { setSelectedCustomerId(c.id); setShowRecordModal(true); }}
+                            className={`px-3 py-1 text-[9px] font-bold uppercase hover:opacity-90 border shadow-[2px_2px_0px_0px_rgba(20,20,20,0.2)] transition-all ${
+                              isNegative 
+                                ? 'bg-red-600 text-white border-red-700 shadow-red-900/20' 
+                                : 'bg-[#141414] text-white border-[#141414]'
+                            }`}
+                          >
+                            {isNegative ? 'URGENT MANAGE' : 'MANAGE'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {paginatedCustomers.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="p-12 text-center">
+                        <div className="flex flex-col items-center gap-2 text-gray-400">
+                          <Users size={32} className="opacity-20" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest italic">No customers found</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Customer Pagination */}
+            <div className="p-4 border-t border-[#141414] flex justify-between items-center bg-gray-50">
+              <p className="text-[10px] font-bold uppercase text-gray-500 italic">
+                Showing {paginatedCustomers.length} of {filteredCustomers.length} customers
+              </p>
+              <div className="flex gap-2">
+                <button 
+                  disabled={customerPage === 1}
+                  onClick={() => setCustomerPage(p => p - 1)}
+                  className="p-1.5 border border-[#141414] hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <div className="flex items-center gap-1 font-mono text-[10px] font-bold px-2">
+                  <span>{customerPage}</span>
+                  <span className="text-gray-300">/</span>
+                  <span>{totalCustomerPages || 1}</span>
+                </div>
+                <button 
+                  disabled={customerPage >= totalCustomerPages}
+                  onClick={() => setCustomerPage(p => p + 1)}
+                  className="p-1.5 border border-[#141414] hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="bg-white border border-[#141414] shadow-[6px_6px_0px_0px_rgba(20,20,20,1)] flex flex-col h-[700px]">
+             <div className="p-4 border-b border-[#141414] flex justify-between items-center bg-gray-50">
+               <div className="flex items-center gap-2">
+                 <History size={14} />
+                 <h3 className="text-xs font-bold uppercase tracking-widest italic text-[#141414]">Service Logs</h3>
+               </div>
+               <select 
+                  className="px-2 py-1 border border-[#141414] text-[9px] font-bold uppercase bg-white focus:outline-none"
+                  value={typeFilter}
+                  onChange={e => { setTypeFilter(e.target.value as any); setLogPage(1); }}
+                >
+                  <option value="all">ALL TYPES</option>
+                  <option value="INSTALLATION_FEE">FEE</option>
+                  <option value="SERVICE_EXPENSE">EXPENSE</option>
+                  <option value="TOP_UP">TOP-UP</option>
+                </select>
+             </div>
+             <div className="flex-1 overflow-y-auto p-4 space-y-4">
+               {paginatedTransactions.map(t => (
+                 <div key={t.id} className="p-3 border border-[#141414] space-y-2 relative group hover:bg-gray-50 transition-colors">
+                   <div className="flex justify-between items-start">
+                     <span className={`text-[8px] font-bold px-2 py-0.5 border border-[#141414] uppercase ${
+                       t.type === 'INSTALLATION_FEE' ? 'bg-blue-50 text-blue-600' : 
+                       t.type === 'SERVICE_EXPENSE' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'
+                     }`}>
+                       {t.type.replace('_', ' ')}
+                     </span>
+                     <span className="text-[9px] font-mono text-gray-400">
+                       {new Date(t.timestamp).toLocaleDateString()}
+                     </span>
+                   </div>
+                   <div>
+                     <p className="text-[10px] font-bold uppercase">{(t as any).customers?.name}</p>
+                     <p className="text-[11px] text-gray-600 leading-snug mt-1 italic">{t.description}</p>
+                   </div>
+                   <div className="flex justify-between items-end pt-2 border-t border-gray-100">
+                      <p className="text-[9px] font-mono text-gray-500 uppercase">{t.invoiceNumber || 'NO INVOICE'}</p>
+                      <p className={`text-[11px] font-bold font-mono ${t.type === 'SERVICE_EXPENSE' ? 'text-red-500' : 'text-green-600'}`}>
+                        {t.type === 'SERVICE_EXPENSE' ? '-' : '+'}${Math.abs(t.amount || 0).toFixed(2)}
+                      </p>
+                   </div>
+                 </div>
+               ))}
+               {paginatedTransactions.length === 0 && (
+                 <div className="h-full flex flex-col items-center justify-center text-gray-300 gap-4 py-20 grayscale opacity-20">
+                   <Hammer size={64} />
+                   <p className="text-[10px] font-bold uppercase tracking-widest">No results</p>
+                 </div>
+               )}
+             </div>
+
+             {/* Log Pagination */}
+             <div className="p-3 border-t border-[#141414] flex justify-between items-center bg-gray-50">
+                <div className="flex items-center gap-1 font-mono text-[9px] font-bold text-gray-400">
+                  PAGE {logPage} / {totalLogPages || 1}
+                </div>
+                <div className="flex gap-2">
+                  <button 
+                    disabled={logPage === 1}
+                    onClick={() => setLogPage(p => p - 1)}
+                    className="p-1 border border-[#141414] hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <ChevronLeft size={12} />
+                  </button>
+                  <button 
+                    disabled={logPage >= totalLogPages}
+                    onClick={() => setLogPage(p => p + 1)}
+                    className="p-1 border border-[#141414] hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <ChevronRight size={12} />
+                  </button>
+                </div>
+             </div>
+          </div>
+        </div>
+      </div>
+
+      {showRecordModal && (
+        <RecordAfterSalesModal 
+          customerId={selectedCustomerId}
+          onClose={() => { setShowRecordModal(false); setSelectedCustomerId(null); }}
+          onSuccess={fetchData}
+        />
+      )}
+    </motion.div>
+  );
+}
+
+function RecordAfterSalesModal({ customerId, onClose, onSuccess }: { customerId?: string | null, onClose: () => void, onSuccess?: () => void }) {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    customerId: customerId || '',
+    amount: '',
+    type: 'SERVICE_EXPENSE' as AfterSalesTransactionType,
+    invoiceNumber: '',
+    description: ''
+  });
+
+  useEffect(() => {
+    const fetchCustomers = async () => {
+      const { data, error } = await supabase.from('customers').select('*').order('name');
+      if (!error) {
+        setCustomers((data as any[]).map(c => ({
+          ...c,
+          invoiceDate: c.invoice_date,
+          invoiceNumber: c.invoice_number,
+          invoiceAmount: c.invoice_amount,
+          loyaltyPoints: c.loyalty_points || 0,
+          totalSpend: c.total_spend || 0,
+          changeCredit: c.change_credit || 0,
+          installationBalance: c.installation_balance || 0,
+          createdAt: c.created_at
+        })) as Customer[]);
+      }
+    };
+    fetchCustomers();
+  }, []);
+
+  const selectedCustomer = customers.find(c => c.id === formData.customerId);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCustomer) return;
+
+    setLoading(true);
+    try {
+      const amountValue = parseFloat(formData.amount) || 0;
+      
+      // 1. Record Transaction
+      const { error: transErr } = await supabase
+        .from('after_sales_transactions')
+        .insert({
+          customer_id: selectedCustomer.id,
+          type: formData.type,
+          amount: amountValue,
+          invoice_number: formData.invoiceNumber,
+          description: formData.description
+        });
+      if (transErr) throw transErr;
+
+      // 2. Update Customer Balance
+      let newBalance = selectedCustomer.installationBalance;
+      if (formData.type === 'SERVICE_EXPENSE') {
+        newBalance -= amountValue;
+      } else {
+        newBalance += amountValue;
+      }
+
+      const { error: custErr } = await supabase
+        .from('customers')
+        .update({ installation_balance: newBalance })
+        .eq('id', selectedCustomer.id);
+      if (custErr) throw custErr;
+
+      if (profile) {
+        await logAudit(profile.uid, profile.name, 'WRITE', 'AfterSales', selectedCustomer.id, `Recorded ${formData.type} of $${amountValue} for ${selectedCustomer.name}`);
+      }
+
+      addToast("Service record saved successfully", "success");
+      onSuccess?.();
+      onClose();
+    } catch (err) {
+      handleSupabaseError(err, OperationType.WRITE, 'after_sales_transactions');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white border-2 border-[#141414] p-8 max-w-md w-full shadow-[10px_10px_0px_0px_rgba(20,20,20,1)]">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <Hammer size={24} />
+            <h2 className="text-xl font-bold tracking-tighter uppercase italic text-[#141414]">Record Service Entry</h2>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-gray-100 transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-[#141414]/60 mb-1 uppercase">Customer *</label>
+            <select 
+              required
+              className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none bg-white font-bold"
+              value={formData.customerId}
+              onChange={e => setFormData({ ...formData, customerId: e.target.value })}
+            >
+              <option value="">CHOOSE CUSTOMER...</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name} (${c.installationBalance.toFixed(2)} Bal)</option>)}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-[#141414]/60 mb-1 uppercase">Entry Type *</label>
+              <select 
+                required
+                className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+                value={formData.type}
+                onChange={e => setFormData({ ...formData, type: e.target.value as AfterSalesTransactionType })}
+              >
+                <option value="SERVICE_EXPENSE">EXPENSE DEDUCTION</option>
+                <option value="TOP_UP">TOP-UP / PAYMENT</option>
+                <option value="INSTALLATION_FEE">NEW INSTALLATION FEE</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold tracking-widest text-[#141414]/60 mb-1 uppercase">Amount ($) *</label>
+              <input 
+                required
+                type="number" 
+                step="0.01"
+                placeholder="0.00"
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none font-bold"
+                value={formData.amount}
+                onChange={e => setFormData({ ...formData, amount: e.target.value })}
+              />
+            </div>
+          </div>
+
+          {selectedCustomer && (
+            <div className="p-3 border border-[#141414] bg-gray-50 space-y-2">
+               <p className="text-[10px] font-bold uppercase italic text-gray-500">Customer Details</p>
+               <div className="grid grid-cols-2 gap-2 text-[10px] uppercase font-bold">
+                  <div className="col-span-2">
+                    <span className="text-gray-400 block">Address</span>
+                    <span className="block italic">{selectedCustomer.address || 'NO ADDRESS ON FILE'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Contact</span>
+                    <span>{selectedCustomer.phone}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Invoice</span>
+                    <span>{selectedCustomer.invoiceNumber || 'N/A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Purchase Date</span>
+                    <span>{selectedCustomer.invoiceDate ? new Date(selectedCustomer.invoiceDate).toLocaleDateString() : 'N/A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-400 block">Current Balance</span>
+                    <span className={selectedCustomer.installationBalance < 0 ? 'text-red-600 font-black underline' : 'text-green-600'}>
+                      ${selectedCustomer.installationBalance.toFixed(2)}
+                    </span>
+                  </div>
+               </div>
+            </div>
+          )}
+
+          <div>
+             <label className="block text-[10px] font-bold tracking-widest text-[#141414]/60 mb-1 uppercase">Invoice/Receipt Ref</label>
+             <input 
+               type="text" 
+               placeholder="REF-0000"
+               className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none"
+               value={formData.invoiceNumber}
+               onChange={e => setFormData({ ...formData, invoiceNumber: e.target.value })}
+             />
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold tracking-widest text-[#141414]/60 mb-1 uppercase">Service Description *</label>
+            <textarea 
+              required
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none h-20"
+              placeholder="e.g. Technician travel expenses, mounting hardware..."
+              value={formData.description}
+              onChange={e => setFormData({ ...formData, description: e.target.value })}
+            />
+          </div>
+
+          <div className="flex gap-4 pt-4">
+            <button type="button" onClick={onClose} className="flex-1 py-3 border border-[#141414] text-[10px] font-bold hover:bg-gray-50 transition-colors uppercase">CANCEL</button>
+            <button type="submit" disabled={loading} className="flex-1 py-3 bg-[#141414] text-white text-[10px] font-bold hover:bg-gray-800 transition-colors disabled:opacity-50 uppercase shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+              {loading ? 'SAVING...' : 'SAVE ENTRY'}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
+
+function CustomerDetailModal({ customer, onClose, onUpdate }: { customer: Customer, onClose: () => void, onUpdate?: () => void }) {
   const { profile } = useAuth();
   const { addToast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
@@ -2952,6 +4424,7 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
           ...m,
           customerId: m.customer_id,
           serialNumber: m.serial_number,
+          purchasePrice: m.purchase_price || 0,
           purchaseDate: m.purchase_date,
           warrantyExpiry: m.warranty_expiry,
           lastServiceDate: m.last_service_date,
@@ -2972,6 +4445,98 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
       subscription.unsubscribe();
     };
   }, [customer.id]);
+
+  const handleRedeem = async () => {
+    if (customer.loyaltyPoints < 500) {
+      addToast("Not enough points to redeem (Minimum 500)", "error");
+      return;
+    }
+    if (customer.totalSpend < 5000) {
+      addToast("Total spend must be at least $5000 to redeem rewards", "error");
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      const newPoints = customer.loyaltyPoints - 500;
+      
+      // 1. Log Transaction
+      const { error: transError } = await supabase
+        .from('loyalty_transactions')
+        .insert({
+          customer_id: customer.id,
+          type: 'REDEMPTION',
+          amount: 50,
+          points: -500,
+          description: "Redeemed 500 points for $50 discount"
+        });
+      
+      if (transError) throw transError;
+
+      // 2. Update Customer
+      const { error } = await supabase
+        .from('customers')
+        .update({ loyalty_points: newPoints })
+        .eq('id', customer.id);
+      
+      if (error) throw error;
+      
+      if (profile) {
+        await logAudit(profile.uid, profile.name, 'UPDATE', 'Customer', customer.id, `Redeemed 500 loyalty points for ${customer.name}`);
+      }
+      addToast("Reward redeemed successfully! $50 discount applied.", "success");
+      onUpdate?.();
+    } catch (err) {
+      addToast("Failed to redeem points", "error");
+      handleSupabaseError(err, OperationType.UPDATE, `customers/${customer.id}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUseCredit = async () => {
+    if (customer.changeCredit <= 0) {
+      addToast("No credit available", "error");
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      const amountToUse = customer.changeCredit;
+      
+      // 1. Log Transaction
+      const { error: transError } = await supabase
+        .from('loyalty_transactions')
+        .insert({
+          customer_id: customer.id,
+          type: 'CREDIT_SPENT',
+          amount: -amountToUse,
+          points: 0,
+          description: `Used $${amountToUse.toFixed(2)} held credit for purchase`
+        });
+      
+      if (transError) throw transError;
+
+      // 2. Update Customer
+      const { error } = await supabase
+        .from('customers')
+        .update({ change_credit: 0 })
+        .eq('id', customer.id);
+      
+      if (error) throw error;
+      
+      if (profile) {
+        await logAudit(profile.uid, profile.name, 'UPDATE', 'Customer', customer.id, `Spent $${amountToUse.toFixed(2)} change credit for ${customer.name}`);
+      }
+      addToast(`Applied $${amountToUse.toFixed(2)} credit successfully!`, "success");
+      onUpdate?.();
+    } catch (err) {
+      addToast("Failed to use credit", "error");
+      handleSupabaseError(err, OperationType.UPDATE, `customers/${customer.id}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3160,11 +4725,72 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
                       <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Total Machinery</span>
                       <span className="text-2xl font-bold tracking-tighter">{machinery.length}</span>
                     </div>
-                    <div className="p-3 border border-[#141414] bg-gray-50 flex flex-col justify-center items-center text-center">
-                      <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Total Spent</span>
-                      <span className="text-2xl font-bold tracking-tighter">
-                        ${customer.invoiceAmount?.toLocaleString(undefined, { minimumFractionDigits: 0 }) || '0'}
-                      </span>
+                    <div className="p-3 border border-[#141414] bg-[#141414] text-white flex flex-col justify-center items-center text-center shadow-[4px_4px_0px_0px_rgba(20,20,20,0.2)]">
+                      <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1">Loyalty Points</span>
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded-full bg-amber-400 animate-pulse"></div>
+                        <span className="text-2xl font-bold tracking-tighter">{customer.loyaltyPoints}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-5 border border-[#141414] bg-amber-50 shadow-[4px_4px_0px_0px_rgba(251,191,36,0.3)]">
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h4 className="text-xs font-bold uppercase italic flex items-center gap-2">
+                          <Trophy size={14} className="text-amber-600" /> CRM Rewards
+                        </h4>
+                        <p className="text-[10px] text-gray-500 mt-1 uppercase font-bold">Total CRM Spend: <span className="text-[#141414] font-mono">${customer.totalSpend.toLocaleString()}</span></p>
+                      </div>
+                      {customer.totalSpend >= 5000 && (
+                        <span className="text-[8px] font-bold bg-green-600 text-white px-2 py-0.5 rounded-full uppercase tracking-widest">Premium Tier</span>
+                      )}
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center bg-white/50 p-2 border border-amber-200">
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-tight">Available Reward</p>
+                          <p className="text-[9px] text-gray-500">500 Points = $50 Product Discount</p>
+                        </div>
+                        <button 
+                          onClick={handleRedeem}
+                          disabled={customer.loyaltyPoints < 500 || customer.totalSpend < 5000 || loading}
+                          className="px-4 py-1.5 bg-amber-500 text-white text-[9px] font-bold uppercase tracking-widest hover:bg-amber-600 disabled:opacity-50 disabled:bg-gray-300 transition-all border border-amber-600 shadow-[2px_2px_0px_0px_rgba(180,83,9,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
+                        >
+                          REDEEM NOW
+                        </button>
+                      </div>
+                      
+                      {customer.totalSpend < 5000 && (
+                        <div className="flex items-center gap-2 text-amber-800 bg-amber-100/50 p-2 border border-amber-200/50 text-[9px] font-bold">
+                          <AlertCircle size={10} />
+                          <span>SPEND <span className="font-mono">${(5000 - customer.totalSpend).toLocaleString()}</span> MORE TO UNLOCK REDEMPTION</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="p-5 border border-[#141414] bg-green-50 shadow-[4px_4px_0px_0px_rgba(34,197,94,0.3)]">
+                    <div className="flex justify-between items-start mb-2">
+                       <div>
+                         <h4 className="text-xs font-bold uppercase italic flex items-center gap-2">
+                           <Droplets size={14} className="text-green-600" /> Change Credit
+                         </h4>
+                         <p className="text-[10px] text-gray-500 mt-1 uppercase font-bold text-green-700">Available held funds for next purchase</p>
+                       </div>
+                    </div>
+                    <div className="flex justify-between items-center bg-white/50 p-2 border border-green-200 mt-2">
+                      <div>
+                        <p className="text-2xl font-bold tracking-tighter text-green-600">${customer.changeCredit.toFixed(2)}</p>
+                      </div>
+                      <button 
+                        onClick={handleUseCredit}
+                        disabled={customer.changeCredit <= 0 || loading}
+                        className="px-4 py-1.5 bg-green-600 text-white text-[9px] font-bold uppercase tracking-widest hover:bg-green-700 disabled:opacity-50 disabled:bg-gray-300 transition-all border border-green-700 shadow-[2px_2px_0px_0px_rgba(21,128,61,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
+                      >
+                        APPLY TO PURCHASE
+                      </button>
                     </div>
                   </div>
                   
@@ -3302,8 +4928,8 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
             </div>
           </div>
         </div>
-        {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} />}
-        {isAddingMachinery && <AddMachineryModal initialCustomerId={customer.id} onClose={() => setIsAddingMachinery(false)} />}
+        {editingMachine && <EditMachineryModal machine={editingMachine} onClose={() => setEditingMachine(null)} onSuccess={onUpdate} />}
+        {isAddingMachinery && <AddMachineryModal initialCustomerId={customer.id} onClose={() => setIsAddingMachinery(false)} onSuccess={onUpdate} />}
         {deletingMachine && (
           <DeleteMachineryModal 
             machine={deletingMachine} 
@@ -3320,6 +4946,7 @@ function CustomerDetailModal({ customer, onClose }: { customer: Customer, onClos
                   await logAudit(profile.uid, profile.name, 'DELETE', 'Machinery', deletingMachine.id, `Deleted machinery: ${deletingMachine.model} (${deletingMachine.serialNumber})`);
                 }
                 addToast(`Machinery ${deletingMachine.model} deleted successfully`, "success");
+                onUpdate?.();
               } catch (err: any) {
                 console.error("Delete machinery error:", err);
                 const errorMessage = err.code === '23503' 
@@ -3886,6 +5513,8 @@ function EditMachineryModal({ machine, onClose, onSuccess }: { machine: Machiner
           invoiceDate: c.invoice_date,
           invoiceNumber: c.invoice_number,
           invoiceAmount: c.invoice_amount,
+          loyaltyPoints: c.loyalty_points || 0,
+          totalSpend: c.total_spend || 0,
           createdAt: c.created_at
         })) as Customer[];
         setCustomers(mappedCustomers);
@@ -4115,7 +5744,7 @@ function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose:
   const { machineryTypes } = useMachineryTypes();
   const [showTypeManager, setShowTypeManager] = useState(false);
   const [formData, setFormData] = useState({ 
-    customerId: initialCustomerId || '', type: '', model: '', serialNumber: '', 
+    customerId: initialCustomerId || '', type: '', model: '', serialNumber: '', purchasePrice: '',
     purchaseDate: '', warrantyExpiry: '', nextServiceDueDate: '', status: 'Operational' as MachineryStatus 
   });
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -4136,6 +5765,8 @@ function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose:
           invoiceDate: c.invoice_date,
           invoiceNumber: c.invoice_number,
           invoiceAmount: c.invoice_amount,
+          loyaltyPoints: c.loyalty_points || 0,
+          totalSpend: c.total_spend || 0,
           createdAt: c.created_at
         })) as Customer[];
         setCustomers(mappedCustomers);
@@ -4148,6 +5779,7 @@ function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose:
     e.preventDefault();
     setLoading(true);
     try {
+      const price = parseFloat(formData.purchasePrice) || 0;
       const { data, error } = await supabase
         .from('machinery')
         .insert({
@@ -4155,6 +5787,7 @@ function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose:
           type: formData.type,
           model: formData.model,
           serial_number: formData.serialNumber,
+          purchase_price: price,
           purchase_date: formData.purchaseDate || null,
           warranty_expiry: formData.warrantyExpiry || null,
           next_service_due_date: formData.nextServiceDueDate || null,
@@ -4164,6 +5797,24 @@ function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose:
         .single();
 
       if (error) throw error;
+
+      // Update Customer Spend and Points
+      const currentCustomer = customers.find(c => c.id === formData.customerId);
+      if (currentCustomer) {
+        const newSpend = (currentCustomer.totalSpend || 0) + price;
+        let newPoints = currentCustomer.loyaltyPoints || 0;
+        if (price >= 1000) {
+          newPoints += Math.floor(price / 10);
+        }
+
+        await supabase
+          .from('customers')
+          .update({
+            total_spend: newSpend,
+            loyalty_points: newPoints
+          })
+          .eq('id', formData.customerId);
+      }
 
       if (profile) {
         await logAudit(profile.uid, profile.name, 'CREATE', 'Machinery', data.id, `Created machinery: ${formData.model} (${formData.serialNumber})`);
@@ -4248,6 +5899,20 @@ function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose:
               />
             </div>
             <div>
+              <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Purchase Price ($) *</label>
+              <input 
+                required
+                type="number" 
+                step="0.01"
+                placeholder="0.00"
+                className="w-full p-2 border border-[#141414] text-sm font-mono focus:outline-none"
+                value={formData.purchasePrice}
+                onChange={e => setFormData({ ...formData, purchasePrice: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
               <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Purchase Date</label>
               <input 
                 type="date" 
@@ -4316,13 +5981,100 @@ function AddMachineryModal({ onClose, initialCustomerId, onSuccess }: { onClose:
 
 function TicketsView() {
   const { profile, canEditTickets } = useAuth();
+  const { addToast } = useToast();
   const [tickets, setTickets] = useState<ServiceTicket[]>([]);
   const [machinery, setMachinery] = useState<Record<string, Machinery>>({});
   const [customers, setCustomers] = useState<Record<string, Customer>>({});
   const [mechanics, setMechanics] = useState<Record<string, UserProfile>>({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterBranch, setFilterBranch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [filterCustomer, setFilterCustomer] = useState('');
+  const [filterMechanic, setFilterMechanic] = useState('');
+  const [filterMachinery, setFilterMachinery] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<ServiceTicket | null>(null);
+
+  const exportToPDF = () => {
+    if (filteredTickets.length === 0) {
+      addToast("No tickets to export", "info");
+      return;
+    }
+    const doc = new jsPDF();
+    const tableColumn = ["ID", "Machine", "Customer", "Mechanic", "Status", "Opened At"];
+    
+    // Split tickets into categories
+    const branchTickets = filteredTickets.filter(t => t.description.includes('BRANCH RETURN ['));
+    const customerTickets = filteredTickets.filter(t => !t.description.includes('BRANCH RETURN ['));
+
+    doc.setFontSize(22);
+    doc.setTextColor(20, 20, 20);
+    doc.text("Service Ticket Report", 14, 20);
+    doc.setFontSize(10);
+    doc.setTextColor(100, 100, 100);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 28);
+    
+    let currentY = 35;
+
+    const addSection = (title: string, tickets: ServiceTicket[], isBranch: boolean = false) => {
+      if (tickets.length === 0) return;
+
+      const headers = isBranch 
+        ? ["ID", "Machine", "Branch", "Mechanic", "Status", "Opened At"]
+        : ["ID", "Machine", "Customer", "Mechanic", "Status", "Opened At"];
+
+      if (currentY > 250) {
+        doc.addPage();
+        currentY = 20;
+      }
+
+      doc.setFontSize(12);
+      doc.setTextColor(20, 20, 20);
+      doc.text(title, 14, currentY);
+      currentY += 4;
+
+      const rows = tickets.map(t => {
+        const machine = machinery[t.machineryId];
+        const customer = customers[t.customerId];
+        const mechanic = t.mechanicId ? mechanics[t.mechanicId] : null;
+
+        let thirdCol = customer?.name || 'Unknown';
+        if (isBranch) {
+          const match = t.description.match(/BRANCH RETURN \[(.*?)\]/);
+          thirdCol = match ? match[1] : 'Internal';
+        }
+
+        return [
+          t.id.slice(0, 8),
+          machine?.model || 'Unknown',
+          thirdCol,
+          mechanic?.name || 'Unassigned',
+          t.status,
+          new Date(t.openedAt).toLocaleDateString()
+        ];
+      });
+
+      // @ts-ignore
+      autoTable(doc, {
+        head: [headers],
+        body: rows,
+        startY: currentY,
+        theme: 'grid',
+        headStyles: { fillColor: [20, 20, 20], textColor: [255, 255, 255] },
+        styles: { fontSize: 8 },
+        margin: { top: currentY }
+      });
+
+      // @ts-ignore
+      currentY = (doc as any).lastAutoTable.finalY + 15;
+    };
+
+    addSection("CUSTOMER MACHINERY TICKETS", customerTickets);
+    addSection("BRANCH RETURNS REPAIR TICKETS", branchTickets, true);
+
+    doc.save(`service_report_${new Date().toISOString().split('T')[0]}.pdf`);
+    addToast("PDF Report exported successfully", "success");
+  };
 
   const fetchTickets = useCallback(async () => {
     const { data, error } = await supabase
@@ -4445,36 +6197,121 @@ function TicketsView() {
     const mechanic = t.mechanicId ? mechanics[t.mechanicId] : null;
     
     const searchLower = searchTerm.toLowerCase();
-    
-    return (
+    const matchesSearch = (
       (machine?.model || '').toLowerCase().includes(searchLower) ||
       (customer?.name || '').toLowerCase().includes(searchLower) ||
       (mechanic?.name || '').toLowerCase().includes(searchLower) ||
       t.id.toLowerCase().includes(searchLower)
     );
+
+    const matchesBranch = !filterBranch || t.description.includes(`BRANCH RETURN [${filterBranch}]`);
+    const matchesStatus = !filterStatus || t.status === filterStatus;
+    const matchesCustomer = !filterCustomer || t.customerId === filterCustomer;
+    const matchesMechanic = !filterMechanic || t.mechanicId === filterMechanic;
+    const matchesMachinery = !filterMachinery || t.machineryId === filterMachinery;
+    
+    return matchesSearch && matchesBranch && matchesStatus && matchesCustomer && matchesMechanic && matchesMachinery;
   });
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
-      <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
-        <div className="relative w-full md:w-96">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-          <input 
-            type="text"
-            placeholder="SEARCH BY MACHINE, CUSTOMER, OR MECHANIC..."
-            className="w-full pl-10 pr-4 py-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white shadow-[2px_2px_0px_0px_rgba(20,20,20,1)]"
-            value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
-          />
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
+          <div className="relative w-full md:w-96">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+            <input 
+              type="text"
+              placeholder="SEARCH BY MACHINE, CUSTOMER, OR MECHANIC..."
+              className="w-full pl-10 pr-4 py-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white shadow-[2px_2px_0px_0px_rgba(20,20,20,1)]"
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-wrap gap-3 w-full md:w-auto">
+            <button 
+              onClick={exportToPDF}
+              className="px-4 py-2 bg-white border border-[#141414] text-[#141414] text-xs font-bold flex items-center justify-center gap-2 hover:bg-gray-50 transition-all shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
+            >
+              <Download size={16} /> EXPORT PDF
+            </button>
+            {canEditTickets && (
+              <button 
+                onClick={() => setIsAdding(true)}
+                className="px-4 py-2 bg-[#141414] text-white text-xs font-bold flex items-center justify-center gap-2 hover:bg-gray-800 transition-all shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
+              >
+                <Plus size={16} /> OPEN NEW TICKET
+              </button>
+            )}
+          </div>
         </div>
-        {canEditTickets && (
-          <button 
-            onClick={() => setIsAdding(true)}
-            className="w-full md:w-auto px-4 py-2 bg-[#141414] text-white text-xs font-bold flex items-center justify-center gap-2 hover:bg-gray-800 transition-all shadow-[4px_4px_0px_0px_rgba(20,20,20,1)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
-          >
-            <Plus size={16} /> OPEN NEW TICKET
-          </button>
-        )}
+
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 bg-white border border-[#141414] p-4 shadow-[4px_4px_0px_0px_rgba(20,20,20,1)]">
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Branch</label>
+            <select
+              value={filterBranch}
+              onChange={e => setFilterBranch(e.target.value)}
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+            >
+              <option value="">ALL BRANCHES</option>
+              {BRANCHES.map(b => (
+                <option key={b} value={b}>{b.toUpperCase()}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Status</label>
+            <select
+              value={filterStatus}
+              onChange={e => setFilterStatus(e.target.value)}
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+            >
+              <option value="">ALL STATUSES</option>
+              <option value="Open">OPEN</option>
+              <option value="In Progress">IN PROGRESS</option>
+              <option value="Completed">COMPLETED</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Customer</label>
+            <select
+              value={filterCustomer}
+              onChange={e => setFilterCustomer(e.target.value)}
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+            >
+              <option value="">ALL CUSTOMERS</option>
+              {Object.values(customers).sort((a,b) => a.name.localeCompare(b.name)).map(c => (
+                <option key={c.id} value={c.id}>{c.name.toUpperCase()}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Mechanic</label>
+            <select
+              value={filterMechanic}
+              onChange={e => setFilterMechanic(e.target.value)}
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+            >
+              <option value="">ALL MECHANICS</option>
+              {Object.values(mechanics).sort((a,b) => a.name.localeCompare(b.name)).map(m => (
+                <option key={m.uid} value={m.uid}>{m.name.toUpperCase()}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-400">Machinery</label>
+            <select
+              value={filterMachinery}
+              onChange={e => setFilterMachinery(e.target.value)}
+              className="w-full p-2 border border-[#141414] text-xs font-mono focus:outline-none bg-white"
+            >
+              <option value="">ALL MACHINERY</option>
+              {Object.values(machinery).sort((a,b) => a.model.localeCompare(b.model)).map(m => (
+                <option key={m.id} value={m.id}>{m.model.toUpperCase()} (#{m.serialNumber})</option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4">
@@ -4511,9 +6348,10 @@ function TicketsView() {
                       <Users size={10} /> {customers[t.customerId]?.name || 'Unknown Customer'}
                     </p>
                     {t.mechanicId && (
-                      <p className="text-[10px] text-blue-600 font-bold uppercase flex items-center gap-1">
-                        <Wrench size={10} /> {mechanics[t.mechanicId]?.name || 'Unknown Mechanic'}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        <UserAvatar name={mechanics[t.mechanicId]?.name || 'Unknown'} size={18} />
+                        <span className="text-[10px] text-blue-600 font-bold uppercase">{mechanics[t.mechanicId]?.name || 'Unknown Mechanic'}</span>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -4837,6 +6675,15 @@ function AddTicketModal({ onClose, onSuccess }: { onClose: () => void, onSuccess
                   </option>
                 ))}
               </select>
+              {formData.mechanicId && (
+                <div className="mt-2 flex items-center gap-3 bg-gray-50 border border-[#141414] p-3 shadow-[2px_2px_0px_0px_rgba(20,20,20,0.05)]">
+                  <UserAvatar name={mechanics.find(m => m.uid === formData.mechanicId)?.name || 'Unknown'} size={32} />
+                  <div>
+                    <p className="text-[9px] font-bold text-gray-400 uppercase">Selected Personnel</p>
+                    <p className="text-xs font-bold uppercase">{mechanics.find(m => m.uid === formData.mechanicId)?.name}</p>
+                  </div>
+                </div>
+              )}
             </div>
             <div>
               <label className="block text-[10px] font-bold tracking-widest text-gray-500 mb-1 uppercase">Problem Description *</label>
@@ -5558,7 +7405,15 @@ function TicketDetailModal({ ticket, onClose }: { ticket: ServiceTicket, onClose
                 {ticket.closedAt && <InfoItem label="Closed" value={new Date(ticket.closedAt).toLocaleDateString()} />}
                 <InfoItem label="Machine ID" value={ticket.machineryId?.slice(0, 8) || ''} />
                 <InfoItem label="Customer ID" value={ticket.customerId?.slice(0, 8) || ''} />
-                {mechanic && <InfoItem label="Assigned To" value={mechanic.name} />}
+                {mechanic && (
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-gray-400 font-bold uppercase tracking-widest">Assigned To</span>
+                    <div className="flex items-center gap-2">
+                      <UserAvatar name={mechanic.name} size={18} />
+                      <span className="font-mono font-bold uppercase">{mechanic.name}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -6132,6 +7987,717 @@ function HistoryView({ initialMachineId, onViewCustomer }: { initialMachineId?: 
   );
 }
 
+function BranchReturnsView() {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [returns, setReturns] = useState<BranchReturn[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tableMissing, setTableMissing] = useState(false);
+  const [isAdding, setIsAdding] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [machinery, setMachinery] = useState<Record<string, Machinery>>({});
+  const [customers, setCustomers] = useState<Record<string, Customer>>({});
+  const [isOpeningTicket, setIsOpeningTicket] = useState<string | null>(null);
+  const [selectedReturn, setSelectedReturn] = useState<BranchReturn | null>(null);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setTableMissing(false);
+    try {
+      const [returnsRes, machRes, custRes] = await Promise.all([
+        supabase.from('branch_returns').select('*').order('return_date', { ascending: false }),
+        supabase.from('machinery').select('*'),
+        supabase.from('customers').select('*')
+      ]);
+
+      if (returnsRes.error) {
+        if (returnsRes.error.code === 'PGRST205') {
+          setTableMissing(true);
+        } else {
+          throw returnsRes.error;
+        }
+      }
+      
+      const machMap: Record<string, Machinery> = {};
+      if (machRes.data) {
+        machRes.data.forEach(m => {
+          machMap[m.id] = {
+            ...m,
+            customerId: m.customer_id,
+            serialNumber: m.serial_number
+          } as Machinery;
+        });
+      }
+      setMachinery(machMap);
+
+      const custMap: Record<string, Customer> = {};
+      if (custRes.data) {
+        custRes.data.forEach(c => {
+          custMap[c.id] = c as Customer;
+        });
+      }
+      setCustomers(custMap);
+
+      const returnData = returnsRes.data || [];
+      setReturns((returnData as any[]).map(r => ({
+        ...r,
+        branchName: r.branch_name,
+        machineryId: r.machinery_id,
+        customerId: r.customer_id,
+        supervisorName: r.supervisor_name,
+        returnDate: r.return_date,
+        ticketId: r.ticket_id
+      })) as BranchReturn[]);
+    } catch (err) {
+      console.error("Error fetching branch returns:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleOpenTicket = async (r: BranchReturn) => {
+    setIsOpeningTicket(r.id);
+    try {
+      const { data: ticketData, error: ticketError } = await supabase
+        .from('service_tickets')
+        .insert({
+          machinery_id: r.machineryId,
+          customer_id: r.customerId,
+          status: 'Open',
+          description: `BRANCH RETURN [${r.branchName}]: ${r.description}`,
+          opened_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (ticketError) throw ticketError;
+
+      const { error: updateError } = await supabase
+        .from('branch_returns')
+        .update({ ticket_id: ticketData.id })
+        .eq('id', r.id);
+
+      if (updateError) throw updateError;
+      
+      addToast("Service ticket opened successfully", "success");
+      fetchData();
+    } catch (err) {
+      console.error(err);
+      addToast("Failed to open ticket", "error");
+    } finally {
+      setIsOpeningTicket(null);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    const sub = supabase.channel('branch_returns_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'branch_returns' }, () => fetchData())
+      .subscribe();
+    return () => { sub.unsubscribe(); };
+  }, [fetchData]);
+
+  const filteredReturns = returns.filter(r => 
+    r.branchName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    r.supervisorName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (machinery[r.machineryId]?.model || '').toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="space-y-6"
+    >
+      <div className="bg-white border border-[#141414] p-6 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-gray-50 -mr-16 -mt-16 rotate-45 pointer-events-none"></div>
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 relative z-10">
+          <div>
+            <h2 className="text-2xl font-black tracking-tighter uppercase italic text-[#141414] leading-none mb-1">Branch Maintenance Pipeline</h2>
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+              <RotateCw size={12} className="text-blue-600" /> Tracking returns from regional service hubs
+            </p>
+          </div>
+          <button 
+            onClick={() => setIsAdding(true)}
+            disabled={loading || tableMissing}
+            className="group relative bg-[#141414] text-white px-6 py-3 text-xs font-bold uppercase tracking-widest overflow-hidden transition-all hover:pr-8 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span className="relative z-10 flex items-center gap-2">
+              <Plus size={16} /> Record Branch Return
+            </span>
+            <div className="absolute top-0 right-0 h-full w-0 bg-blue-600 transition-all group-hover:w-2"></div>
+          </button>
+        </div>
+      </div>
+
+      {tableMissing && (
+        <div className="bg-amber-50 border-2 border-amber-500 p-6 shadow-[4px_4px_0px_0px_rgba(245,158,11,1)] relative overflow-hidden">
+          <div className="flex items-center gap-3 text-amber-800 font-black uppercase tracking-widest text-xs mb-4">
+            <AlertTriangle size={18} /> Database Setup Required
+          </div>
+          <p className="text-xs font-bold text-amber-900 mb-4 tracking-tight uppercase italic leading-relaxed">
+            The <code className="bg-amber-200 px-1 rounded">branch_returns</code> table was not found in your Supabase schema. 
+            To enable this view, please run the following SQL command in your Supabase SQL Editor:
+          </p>
+          <div className="relative group">
+            <pre className="p-4 bg-[#141414] text-gray-300 text-[10px] font-mono overflow-x-auto border-l-4 border-amber-500 shadow-inner">
+{`CREATE TABLE branch_returns (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  branch_name TEXT NOT NULL,
+  machinery_id UUID REFERENCES machinery(id),
+  customer_id UUID REFERENCES customers(id),
+  supervisor_name TEXT NOT NULL,
+  description TEXT,
+  return_date TIMESTAMPTZ DEFAULT NOW(),
+  status TEXT DEFAULT 'Received',
+  ticket_id UUID REFERENCES service_tickets(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`}
+            </pre>
+            <button 
+              onClick={() => {
+                navigator.clipboard.writeText(`CREATE TABLE branch_returns (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  branch_name TEXT NOT NULL,
+  machinery_id UUID REFERENCES machinery(id),
+  customer_id UUID REFERENCES customers(id),
+  supervisor_name TEXT NOT NULL,
+  description TEXT,
+  return_date TIMESTAMPTZ DEFAULT NOW(),
+  status TEXT DEFAULT 'Received',
+  ticket_id UUID REFERENCES service_tickets(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`);
+                addToast("SQL Copied to clipboard", "success");
+              }}
+              className="absolute top-2 right-2 p-2 bg-gray-800 text-white hover:bg-amber-600 transition-colors"
+              title="Copy to clipboard"
+            >
+              <Copy size={14} />
+            </button>
+          </div>
+          <div className="mt-4 flex gap-4">
+            <button 
+              onClick={() => fetchData()}
+              className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2 text-amber-700 hover:text-amber-900 transition-colors"
+            >
+              <RotateCw size={14} /> I've run the SQL, Refresh now
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+          <input 
+            type="text"
+            placeholder="FILTER BY BRANCH, SUPERVISOR OR MACHINE MODEL..."
+            className="w-full pl-10 pr-4 py-4 bg-white border border-[#141414] text-xs font-bold tracking-widest uppercase focus:outline-none focus:bg-gray-50 transition-colors shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="bg-gray-100 h-64 animate-pulse border border-gray-200 shadow-[4px_4px_0px_0px_rgba(0,0,0,0.1)]"></div>
+          ))}
+        </div>
+      ) : filteredReturns.length === 0 ? (
+        <div className="py-20 text-center bg-gray-50 border border-dashed border-gray-300 rounded-lg">
+          <RotateCw size={48} className="mx-auto mb-4 text-gray-200 stroke-[1.5]" />
+          <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">No active branch returns in pipeline</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredReturns.map(r => (
+            <div 
+              key={r.id} 
+              onClick={() => setSelectedReturn(r)}
+              className="group bg-white border border-[#141414] p-5 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] transition-all flex flex-col justify-between cursor-pointer"
+            >
+              <div>
+                <div className="flex justify-between items-start mb-4">
+                  <div className="px-3 py-1 bg-[#141414] text-white text-[9px] font-black uppercase tracking-widest italic">
+                    {r.branchName}
+                  </div>
+                  <div className={`px-3 py-1 text-[9px] font-black uppercase tracking-widest border border-[#141414] ${
+                    r.status === 'Received' ? 'bg-blue-50 text-blue-800' :
+                    r.status === 'In Repair' ? 'bg-amber-50 text-amber-800' :
+                    r.status === 'Ready' ? 'bg-green-50 text-green-800' :
+                    'bg-gray-50 text-gray-800'
+                  }`}>
+                    {r.status}
+                  </div>
+                </div>
+                
+                <div className="mb-4">
+                  <h3 className="font-black text-lg tracking-tighter uppercase italic leading-tight group-hover:text-blue-600 transition-colors">
+                    {machinery[r.machineryId]?.model || 'Unknown Engine'}
+                  </h3>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    SN: {machinery[r.machineryId]?.serialNumber || 'N/A'}
+                  </p>
+                </div>
+
+                <div className="p-3 bg-gray-50 border border-gray-200 text-[11px] leading-relaxed mb-4 italic text-gray-700">
+                  "{r.description || 'No specific fault description provided'}"
+                </div>
+
+                <div className="space-y-2 border-t border-gray-100 pt-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Supervisor:</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest">{r.supervisorName}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Returned On:</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest">{new Date(r.returnDate).toLocaleDateString()}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest">Owner:</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest truncate max-w-[150px]">
+                      {customers[r.customerId]?.name || 'N/A'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6">
+                {r.ticketId ? (
+                  <div className="w-full flex items-center justify-center p-3 bg-gray-900 text-white text-[10px] font-black uppercase tracking-[0.2em] gap-2">
+                    <CheckCircle2 size={14} className="text-green-400" /> Ticket Active
+                  </div>
+                ) : (
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenTicket(r);
+                    }}
+                    disabled={isOpeningTicket === r.id}
+                    className="w-full py-3 bg-[#141414] text-white text-[10px] font-black uppercase tracking-[0.2em] hover:bg-blue-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    <Wrench size={14} /> {isOpeningTicket === r.id ? 'OPENING...' : 'Open Service Ticket'}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {isAdding && (
+        <AddBranchReturnModal 
+          onClose={() => setIsAdding(false)} 
+          onSuccess={fetchData} 
+        />
+      )}
+
+      {selectedReturn && (
+        <BranchReturnDetailModal 
+          returnRecord={selectedReturn}
+          machinery={machinery[selectedReturn.machineryId]}
+          customer={customers[selectedReturn.customerId]}
+          onClose={() => setSelectedReturn(null)}
+          onOpenTicket={handleOpenTicket}
+          isOpeningTicket={isOpeningTicket === selectedReturn.id}
+        />
+      )}
+    </motion.div>
+  );
+}
+
+function AddBranchReturnModal({ onClose, onSuccess }: { onClose: () => void, onSuccess: () => void }) {
+  const { profile } = useAuth();
+  const { addToast } = useToast();
+  const [loading, setLoading] = useState(false);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [machinery, setMachinery] = useState<Machinery[]>([]);
+  const [mechanics, setMechanics] = useState<UserProfile[]>([]);
+  const [formData, setFormData] = useState({
+    branchName: BRANCHES[0],
+    machineryId: '',
+    customerId: '',
+    supervisorName: '',
+    description: '',
+    mechanicId: '' 
+  });
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [custRes, machRes, userRes] = await Promise.all([
+          supabase.from('customers').select('*').order('name'),
+          supabase.from('machinery').select('*').order('model'),
+          supabase.from('users').select('*').in('role', ['Field Technician', 'Administrator', 'Manager'])
+        ]);
+
+        if (custRes.error) throw custRes.error;
+        if (machRes.error) throw machRes.error;
+        if (userRes.error) throw userRes.error;
+
+        setCustomers(custRes.data as Customer[]);
+        setMachinery(machRes.data.map(m => ({ ...m, customerId: m.customer_id })) as Machinery[]);
+        setMechanics(userRes.data as UserProfile[]);
+        
+        if (userRes.data.length > 0) {
+          setFormData(prev => ({ ...prev, mechanicId: userRes.data[0].uid }));
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.machineryId || !formData.customerId || !formData.supervisorName) {
+      addToast("Please fill in all required fields", "error");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // 1. Create Service Ticket
+      const { data: ticketData, error: ticketError } = await supabase
+        .from('service_tickets')
+        .insert({
+          machinery_id: formData.machineryId,
+          customer_id: formData.customerId,
+          mechanic_id: formData.mechanicId || null,
+          status: 'Open',
+          description: `BRANCH RETURN [${formData.branchName}]: ${formData.description}`,
+          opened_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (ticketError) throw ticketError;
+
+      // 2. Create Branch Return Record
+      const { error: returnError } = await supabase
+        .from('branch_returns')
+        .insert({
+          branch_name: formData.branchName,
+          machinery_id: formData.machineryId,
+          customer_id: formData.customerId,
+          supervisor_name: formData.supervisorName,
+          description: formData.description,
+          return_date: new Date().toISOString(),
+          status: 'Received',
+          ticket_id: ticketData.id
+        });
+
+      if (returnError) throw returnError;
+
+      // 3. Update Machinery Status
+      await supabase
+        .from('machinery')
+        .update({ status: 'Under Repair' })
+        .eq('id', formData.machineryId);
+
+      // 4. Audit Log
+      await logAudit(
+        profile?.uid || 'system', 
+        profile?.name || 'Supervisor', 
+        'CREATE', 
+        'BranchReturn', 
+        formData.machineryId, 
+        `Machine returned from ${formData.branchName} for repairs.`
+      );
+
+      addToast("Branch return recorded and service ticket opened", "success");
+      onSuccess();
+    } catch (err) {
+      console.error(err);
+      addToast("Failed to process branch return", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectedCustomerMachinery = machinery.filter(m => m.customerId === formData.customerId);
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9, rotateX: 10 }}
+        animate={{ opacity: 1, scale: 1, rotateX: 0 }}
+        className="bg-white w-full max-w-2xl border-4 border-[#141414] shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] relative overflow-hidden"
+      >
+        <div className="absolute top-0 right-0 p-4">
+          <button onClick={onClose} className="text-[#141414] hover:text-red-600 transition-colors">
+            <X size={24} />
+          </button>
+        </div>
+
+        <div className="p-8">
+          <div className="mb-8 border-b-4 border-[#141414] pb-4">
+            <h2 className="text-3xl font-black tracking-tighter uppercase italic leading-none">Record Branch Return</h2>
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mt-1">Initiating repair workflow for branch machinery</p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Source Branch *</label>
+                  <select 
+                    required
+                    className="w-full p-3 border-2 border-[#141414] text-xs font-bold uppercase tracking-widest bg-white focus:bg-gray-50 outline-none"
+                    value={formData.branchName}
+                    onChange={e => setFormData({ ...formData, branchName: e.target.value })}
+                  >
+                    {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Branch Supervisor *</label>
+                  <input 
+                    required
+                    type="text"
+                    className="w-full p-3 border-2 border-[#141414] text-xs font-bold uppercase tracking-widest focus:bg-gray-50 outline-none"
+                    placeholder="NAME OF PERSON HANDING OVER..."
+                    value={formData.supervisorName}
+                    onChange={e => setFormData({ ...formData, supervisorName: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Assign to Mechanic</label>
+                  <select 
+                    className="w-full p-3 border-2 border-[#141414] text-xs font-bold uppercase tracking-widest bg-white focus:bg-gray-50 outline-none"
+                    value={formData.mechanicId}
+                    onChange={e => setFormData({ ...formData, mechanicId: e.target.value })}
+                  >
+                    <option value="">-- AUTO-ASSIGN LATER --</option>
+                    {mechanics.map(m => (
+                      <option key={m.uid} value={m.uid}>{m.name} ({m.role})</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Owner / Customer *</label>
+                  <select 
+                    required
+                    className="w-full p-3 border-2 border-[#141414] text-xs font-bold uppercase tracking-widest bg-white focus:bg-gray-50 outline-none"
+                    value={formData.customerId}
+                    onChange={e => setFormData({ ...formData, customerId: e.target.value, machineryId: '' })}
+                  >
+                    <option value="">-- SELECT CUSTOMER --</option>
+                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Select Machinery *</label>
+                  <select 
+                    required
+                    disabled={!formData.customerId}
+                    className="w-full p-3 border-2 border-[#141414] text-xs font-bold uppercase tracking-widest bg-white focus:bg-gray-50 outline-none disabled:bg-gray-100 disabled:opacity-50"
+                    value={formData.machineryId}
+                    onChange={e => setFormData({ ...formData, machineryId: e.target.value })}
+                  >
+                    <option value="">{formData.customerId ? '-- SELECT MACHINE --' : '-- SELECT CUSTOMER FIRST --'}</option>
+                    {selectedCustomerMachinery.map(m => (
+                      <option key={m.id} value={m.id}>{m.model} (SN: {m.serialNumber})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Reported Problem / Reasons *</label>
+                  <textarea 
+                    required
+                    rows={3}
+                    className="w-full p-3 border-2 border-[#141414] text-xs font-bold uppercase tracking-widest focus:bg-gray-50 outline-none resize-none"
+                    placeholder="DESCRIBE THE ISSUE IN DETAIL..."
+                    value={formData.description}
+                    onChange={e => setFormData({ ...formData, description: e.target.value })}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-4 pt-4">
+              <button 
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-4 border-2 border-[#141414] text-[10px] font-black uppercase tracking-[0.3em] hover:bg-gray-50 transition-colors"
+                disabled={loading}
+              >
+                Cancel
+              </button>
+              <button 
+                type="submit"
+                className="flex-[2] py-4 bg-[#141414] text-white text-[10px] font-black uppercase tracking-[0.3em] hover:bg-blue-600 transition-colors disabled:bg-gray-400"
+                disabled={loading}
+              >
+                {loading ? 'PROCESSING...' : 'RECORD RETURN & OPEN TICKET'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+function BranchReturnDetailModal({ returnRecord, machinery, customer, onClose, onOpenTicket, isOpeningTicket }: { 
+  returnRecord: BranchReturn, 
+  machinery?: Machinery, 
+  customer?: Customer, 
+  onClose: () => void,
+  onOpenTicket: (r: BranchReturn) => void,
+  isOpeningTicket: boolean
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9, rotateY: 10 }}
+        animate={{ opacity: 1, scale: 1, rotateY: 0 }}
+        className="bg-white w-full max-w-2xl border-4 border-[#141414] shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] relative overflow-hidden"
+      >
+        <div className="absolute top-0 right-0 p-4 z-10">
+          <button onClick={onClose} className="text-[#141414] hover:text-red-600 transition-colors">
+            <X size={24} />
+          </button>
+        </div>
+
+        <div className="p-8">
+          <div className="mb-8 border-b-4 border-[#141414] pb-6 flex justify-between items-end">
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="px-3 py-1 bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest italic">
+                  Branch: {returnRecord.branchName}
+                </div>
+                <div className={`px-3 py-1 text-[10px] font-black uppercase tracking-widest border-2 border-[#141414] ${
+                  returnRecord.status === 'Received' ? 'bg-blue-50 text-blue-800' :
+                  returnRecord.status === 'In Repair' ? 'bg-amber-50 text-amber-800' :
+                  returnRecord.status === 'Ready' ? 'bg-green-50 text-green-800' :
+                  'bg-gray-50 text-gray-800'
+                }`}>
+                  Status: {returnRecord.status}
+                </div>
+              </div>
+              <h2 className="text-3xl font-black tracking-tighter uppercase italic leading-none">Branch Return Details</h2>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-2">
+                Log ID: {returnRecord.id.slice(0, 8).toUpperCase()}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Return Date</p>
+              <p className="text-sm font-black uppercase italic">{new Date(returnRecord.returnDate).toLocaleDateString()}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+            <div className="space-y-6">
+              <div className="bg-gray-50 p-4 border border-[#141414] shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-3 flex items-center gap-2">
+                  <Construction size={14} className="text-blue-600" /> Machinery Information
+                </h3>
+                {machinery ? (
+                  <div className="space-y-2">
+                    <p className="text-lg font-black uppercase tracking-tighter italic leading-none">{machinery.model}</p>
+                    <p className="text-[11px] font-bold text-gray-500 uppercase">Serial: {machinery.serialNumber}</p>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-[9px] font-black uppercase bg-gray-200 px-2 py-0.5">{machinery.type}</span>
+                      <span className={`text-[9px] font-black uppercase px-2 py-0.5 border ${
+                        machinery.status === 'Operational' ? 'bg-green-50 text-green-700 border-green-200' :
+                        machinery.status === 'Under Repair' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                        'bg-red-50 text-red-700 border-red-200'
+                      }`}>
+                        {machinery.status}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs font-bold text-red-500 uppercase">Machinery data not found</p>
+                )}
+              </div>
+
+              <div className="bg-gray-50 p-4 border border-[#141414] shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-3 flex items-center gap-2">
+                  <UserIcon size={14} className="text-amber-600" /> Customer / Owner
+                </h3>
+                {customer ? (
+                  <div className="space-y-2">
+                    <p className="text-lg font-black uppercase tracking-tighter italic leading-none">{customer.name}</p>
+                    <p className="text-[11px] font-bold text-gray-500 uppercase">{customer.phone}</p>
+                    <p className="text-[11px] font-bold text-gray-400 uppercase truncate">{customer.email || 'NO EMAIL PROVIDED'}</p>
+                  </div>
+                ) : (
+                  <p className="text-xs font-bold text-red-500 uppercase">Customer data not found</p>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div className="bg-[#141414] text-white p-4 shadow-[4px_4px_0px_0px_rgba(59,130,246,1)]">
+                <h3 className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 mb-3 flex items-center gap-2">
+                  <RotateCw size={14} className="text-blue-400" /> Operational Details
+                </h3>
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1">Acting Supervisor</p>
+                    <p className="text-xs font-black uppercase italic tracking-wider">{returnRecord.supervisorName}</p>
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-bold text-gray-500 uppercase tracking-widest mb-1">Problem Description</p>
+                    <p className="text-xs leading-relaxed italic text-gray-300">
+                      "{returnRecord.description || 'No detailed fault report provided.'}"
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white p-4 border-2 border-dashed border-gray-200">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-400 mb-3">Service Ticket Status</h3>
+                {returnRecord.ticketId ? (
+                  <div className="flex items-center gap-3 p-3 bg-green-50 text-green-800 text-xs font-black uppercase tracking-widest rounded border border-green-100">
+                    <CheckCircle2 size={16} /> Ticket Active & Linked
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 p-3 bg-amber-50 text-amber-800 text-xs font-black uppercase tracking-widest rounded border border-amber-100 italic">
+                    <AlertTriangle size={16} /> No Service Ticket Linked
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-4">
+            <button 
+              onClick={onClose}
+              className="flex-1 py-4 border-2 border-[#141414] text-[10px] font-black uppercase tracking-[0.3em] hover:bg-gray-50 transition-colors"
+            >
+              Close History
+            </button>
+            {!returnRecord.ticketId && (
+              <button 
+                onClick={() => onOpenTicket(returnRecord)}
+                disabled={isOpeningTicket}
+                className="flex-[2] py-4 bg-blue-600 text-white text-[10px] font-black uppercase tracking-[0.3em] hover:bg-blue-700 transition-colors shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <Wrench size={16} /> {isOpeningTicket ? 'PREPARING TICKET...' : 'OPEN REPAIR TICKET NOW'}
+              </button>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function InventoryView() {
   const { profile, canEditInventory } = useAuth();
   const { addToast } = useToast();
@@ -6375,6 +8941,7 @@ function PartModal({ part, onClose }: { part: Part | null, onClose: () => void }
     unitPrice: part?.unitPrice || 0,
     category: part?.category || 'General'
   });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -6458,9 +9025,13 @@ function PartModal({ part, onClose }: { part: Part | null, onClose: () => void }
     }
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (!part || !canEditInventory || profile?.role !== 'Administrator') return;
-    if (!window.confirm("ARE YOU ABSOLUTELY SURE? THIS CANNOT BE UNDONE.")) return;
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!part) return;
     setLoading(true);
     try {
       const { error } = await supabase
@@ -6479,6 +9050,7 @@ function PartModal({ part, onClose }: { part: Part | null, onClose: () => void }
       addToast("Failed to delete part", "error");
     } finally {
       setLoading(false);
+      setShowDeleteConfirm(false);
     }
   };
 
@@ -6597,6 +9169,15 @@ function PartModal({ part, onClose }: { part: Part | null, onClose: () => void }
             )}
           </div>
         </form>
+        {showDeleteConfirm && (
+          <DeleteConfirmationModal
+            title="Delete Inventory Part"
+            message={`Are you sure you want to delete ${formData.name}? This action is permanent and cannot be reversed.`}
+            onConfirm={confirmDelete}
+            onCancel={() => setShowDeleteConfirm(false)}
+            isDeleting={loading}
+          />
+        )}
       </motion.div>
     </div>
   );
@@ -6650,8 +9231,11 @@ function TicketLogs({ ticketId, ticket, machinery, customer }: { ticketId: strin
       {logs.map(log => (
         <div key={log.id} className="pl-4 border-l-2 border-[#141414] py-1">
           <div className="flex justify-between items-center mb-1">
-            <span className="text-[9px] font-bold text-gray-400 uppercase">{new Date(log.timestamp).toLocaleString()}</span>
-            <span className="text-[9px] font-mono text-gray-300">MECH: {log.mechanicId?.slice(0, 5)}</span>
+            <div className="flex items-center gap-2">
+              <UserAvatar name={log.mechanicName} size={16} />
+              <span className="text-[9px] font-bold text-gray-400 uppercase">{new Date(log.timestamp).toLocaleString()}</span>
+            </div>
+            <span className="text-[9px] font-mono text-gray-300 uppercase">BY: {log.mechanicName}</span>
           </div>
           <p className="text-xs">{log.workDone}</p>
           {log.partsReplaced && <p className="text-[10px] text-blue-600 font-bold mt-1 uppercase">Parts: {log.partsReplaced}</p>}
@@ -6679,6 +9263,8 @@ function MechanicsView() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingMechanic, setEditingMechanic] = useState<UserProfile | null>(null);
   const [selectedMechanic, setSelectedMechanic] = useState<UserProfile | null>(null);
+  const [userToDelete, setUserToDelete] = useState<{uid: string, name: string} | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (!profile) return;
@@ -6768,27 +9354,35 @@ function MechanicsView() {
     };
   };
 
-  const handleDelete = async (uid: string) => {
+  const handleDelete = (uid: string, name: string) => {
     if (uid === profile?.uid) {
       addToast("You cannot delete your own account", "error");
       return;
     }
-    if (!window.confirm("Are you sure you want to remove this team member?")) return;
+    setUserToDelete({ uid, name });
+  };
 
+  const confirmDelete = async () => {
+    if (!userToDelete) return;
+    setIsDeleting(true);
     try {
       const { error } = await supabase
         .from('users')
         .delete()
-        .eq('uid', uid);
+        .eq('uid', userToDelete.uid);
       
       if (error) throw error;
       if (profile) {
-        await logAudit(profile.uid, profile.name, 'DELETE', 'User', uid, 'Removed team member');
+        await logAudit(profile.uid, profile.name, 'DELETE', 'User', userToDelete.uid, 'Removed team member');
       }
+      setMechanics(prev => prev.filter(m => m.uid !== userToDelete.uid));
       addToast("Team member removed successfully", "success");
+      setUserToDelete(null);
     } catch (err) {
       addToast("Failed to remove team member", "error");
-      handleSupabaseError(err, OperationType.DELETE, `users/${uid}`);
+      handleSupabaseError(err, OperationType.DELETE, `users/${userToDelete.uid}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -6813,9 +9407,7 @@ function MechanicsView() {
           <div key={m.uid} className="bg-white border border-[#141414] p-6 shadow-[6px_6px_0px_0px_rgba(20,20,20,1)] flex flex-col justify-between">
             <div>
               <div className="flex justify-between items-start mb-4">
-                <div className="w-12 h-12 bg-[#141414] text-white rounded-full flex items-center justify-center text-xl font-bold">
-                  {m.name.charAt(0)}
-                </div>
+                <UserAvatar name={m.name} size={48} className="text-xl font-bold" />
                 <span className={`text-[10px] font-bold px-2 py-1 border border-[#141414] uppercase ${
                   m.role === 'Administrator' ? 'bg-red-50 text-red-600' : 
                   m.role === 'Manager' ? 'bg-blue-50 text-blue-600' : 'bg-green-50 text-green-600'
@@ -6875,10 +9467,10 @@ function MechanicsView() {
                     Edit Role
                   </button>
                   <button 
-                    onClick={() => handleDelete(m.uid)}
+                    onClick={() => handleDelete(m.uid, m.name)}
                     className="px-3 py-2 border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
                   >
-                    <LogOut size={14} className="rotate-180" />
+                    <Trash2 size={14} />
                   </button>
                 </div>
               )}
@@ -6898,6 +9490,16 @@ function MechanicsView() {
         <MechanicDetailModal 
           mechanic={selectedMechanic} 
           onClose={() => setSelectedMechanic(null)} 
+        />
+      )}
+
+      {userToDelete && (
+        <DeleteConfirmationModal
+          title="Remove Team Member"
+          message={`Are you sure you want to remove ${userToDelete.name}? This will revoke their access to the system immediately.`}
+          onConfirm={confirmDelete}
+          onCancel={() => setUserToDelete(null)}
+          isDeleting={isDeleting}
         />
       )}
     </motion.div>
